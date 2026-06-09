@@ -17,7 +17,7 @@ mod time;
 const IO_ADDRESS: u8 = 3;
 const SLAVE_IDENT: u16 = 0x0008;
 const MASTER_ADDRESS: u8 = 2;
-const BAUDRATE: Baudrate = Baudrate::B9600;
+const BAUDRATE: Baudrate = Baudrate::B1500000;
 
 #[bsp::entry]
 fn main() -> ! {
@@ -129,7 +129,7 @@ fn main() -> ! {
 
     let options = profirust::dp::PeripheralOptions {
         ident_number: SLAVE_IDENT,
-        user_parameters: None,
+        user_parameters: Some(&[]),
         config: Some(&[0x1f, 0x2f]),
 
         max_tsdr: match BAUDRATE {
@@ -196,7 +196,7 @@ fn main() -> ! {
 
         if last.secs() != now.secs() {
             if io_station.is_running() {
-                log::info!("Inputs: {:08b}", io_station.pi_i()[0]);
+                log::info!("Inputs: DIP={:04b}", (!io_station.pi_i()[3]) & 0b1111);
             }
             let _ = led_pin.toggle();
         }
