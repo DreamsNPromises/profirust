@@ -11,6 +11,7 @@ mod master;
 mod peripheral;
 mod peripheral_set;
 pub mod scan;
+mod statistics;
 
 pub use diagnostics::{
     ChannelDataType, ChannelDiagnostics, ChannelError, ExtDiagBlock, ExtDiagBlockIter,
@@ -24,3 +25,4 @@ pub use peripheral::{
 };
 pub(crate) use peripheral_set::PeripheralSet;
 pub use peripheral_set::{PeripheralHandle, PeripheralStorage};
+pub use statistics::DpStatistics;

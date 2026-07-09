@@ -347,6 +347,8 @@ impl<'a> Peripheral<'a> {
 
         if self.state != PeripheralState::Offline && self.retry_count == 1 {
             log::warn!("Resending a telegram to #{}...", self.address);
+            #[cfg(feature = "statistics")]
+            dp.statistics.retries.set(dp.statistics.retries.get() + 1);
         }
 
         let res = match self.state {
@@ -354,6 +356,8 @@ impl<'a> Peripheral<'a> {
                 // Assume peripheral is now offline so the next step is sending SYNC messages to detect
                 // when it comes back.
                 log::warn!("Peripheral #{} stopped responding!", self.address);
+                #[cfg(feature = "statistics")]
+                dp.statistics.offline_events.set(dp.statistics.offline_events.get() + 1);
                 self.state = PeripheralState::Offline;
                 Err((tx, Some(PeripheralEvent::Offline)))
             }
@@ -558,6 +562,8 @@ impl<'a> Peripheral<'a> {
                     if self.handle_diagnostics_response(fdl, &telegram).is_some() {
                         self.retry_count = 0;
                         self.diag_needed = false;
+                        #[cfg(feature = "statistics")]
+                        dp.statistics.diagnostics_events.set(dp.statistics.diagnostics_events.get() + 1);
                         Some(PeripheralEvent::Diagnostics)
                     } else {
                         None
@@ -598,6 +604,12 @@ impl<'a> Peripheral<'a> {
 
                             if data_ok {
                                 if t.pdu.len() == self.pi_i.len() {
+                                    log::info!(
+                                        "Peripheral #{}: received PDU = {:02x?} (len={})",
+                                        self.address, t.pdu, t.pdu.len()
+                                    );
+                                    #[cfg(feature = "statistics")]
+                                    dp.statistics.data_exchanges.set(dp.statistics.data_exchanges.get() + 1);
                                     self.pi_i.copy_from_slice(t.pdu);
                                     self.state = PeripheralState::DataExchange;
                                     Some(PeripheralEvent::DataExchanged)
@@ -622,6 +634,8 @@ impl<'a> Peripheral<'a> {
                                 );
                                 None
                             } else {
+                                #[cfg(feature = "statistics")]
+                                dp.statistics.data_exchanges.set(dp.statistics.data_exchanges.get() + 1);
                                 self.state = PeripheralState::DataExchange;
                                 Some(PeripheralEvent::DataExchanged)
                             }

@@ -1,4 +1,5 @@
 use crate::dp::Peripheral;
+use crate::dp::DpStatistics;
 
 /// Operating state of the DP master
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -120,6 +121,9 @@ pub struct DpMasterState {
 
     #[cfg(feature = "debug-measure-dp-cycle")]
     last_cycle: Option<crate::time::Instant>,
+
+    #[cfg(feature = "statistics")]
+    pub(crate) statistics: DpStatistics,
 }
 
 impl<'a> DpMaster<'a> {
@@ -140,6 +144,8 @@ impl<'a> DpMaster<'a> {
                 last_events: Default::default(),
                 #[cfg(feature = "debug-measure-dp-cycle")]
                 last_cycle: None,
+                #[cfg(feature = "statistics")]
+                statistics: DpStatistics::default(),
             },
         }
     }
@@ -232,9 +238,19 @@ impl<'a> DpMaster<'a> {
                 self.state.last_cycle = Some(now);
             }
 
+            #[cfg(feature = "statistics")]
+            self.state.statistics.cycles_completed.set(
+                self.state.statistics.cycles_completed.get() + 1
+            );
+
             self.state.cycle_state = CycleState::CycleCompleted;
             true
         }
+    }
+
+    #[cfg(feature = "statistics")]
+    pub fn statistics(&self) -> &DpStatistics {
+        &self.state.statistics
     }
 }
 
@@ -325,6 +341,11 @@ impl<'a> crate::fdl::FdlApplication for DpMaster<'a> {
                     }
                     Err((tx_returned, event)) => {
                         tx = tx_returned;
+
+                        #[cfg(feature = "statistics")]
+                        if event.is_none() {
+                            self.state.statistics.timeouts.set(self.state.statistics.timeouts.get() + 1);
+                        }
 
                         if let Some(event) = event {
                             // If we get here and peripheral_event were already filled, we would
