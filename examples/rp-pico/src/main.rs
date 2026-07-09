@@ -10,6 +10,10 @@ use usbd_serial::SerialPort;
 
 use profirust::{dp, fdl, phy, Baudrate};
 
+use hal::multicore::{Multicore, Stack};
+
+static mut CORE1_STACK: Stack<4096> = Stack::new();
+
 mod logger;
 mod panic_handler;
 mod time;
@@ -17,7 +21,7 @@ mod time;
 const IO_ADDRESS: u8 = 3;
 const SLAVE_IDENT: u16 = 0x0008;
 const MASTER_ADDRESS: u8 = 2;
-const BAUDRATE: Baudrate = Baudrate::B1500000;
+const BAUDRATE: Baudrate = Baudrate::B500000;
 
 #[bsp::entry]
 fn main() -> ! {
@@ -27,7 +31,7 @@ fn main() -> ! {
     let mut pac = pac::Peripherals::take().unwrap();
     let _core = pac::CorePeripherals::take().unwrap();
     let mut watchdog = Watchdog::new(pac.WATCHDOG);
-    let sio = Sio::new(pac.SIO);
+    let mut sio = Sio::new(pac.SIO);
 
     let external_xtal_freq_hz = 12_000_000u32;
     let clocks = init_clocks_and_plls(
@@ -54,52 +58,6 @@ fn main() -> ! {
 
     let mut led_pin = pins.led.into_push_pull_output();
 
-    // ===== USB =====
-    let usb_bus = UsbBusAllocator::new(hal::usb::UsbBus::new(
-        pac.USBCTRL_REGS,
-        pac.USBCTRL_DPRAM,
-        clocks.usb_clock,
-        true,
-        &mut pac.RESETS,
-    ));
-
-    let mut serial = SerialPort::new(&usb_bus);
-
-    let mut usb_dev = UsbDeviceBuilder::new(&usb_bus, UsbVidPid(0x16c0, 0x27dd))
-        .strings(&[StringDescriptors::default()
-            .manufacturer("Rahix Automation")
-            .product("PROFIRUST PICO")
-            .serial_number("PICO01")])
-        .unwrap()
-        .device_class(2)
-        .build();
-
-    // Макрос для сброса логов (избегает проблем с lifetime)
-    // macro_rules! flush {
-    //     () => {
-    //         logger::drain(|buf| serial.write(buf).unwrap_or(0));
-    //         usb_dev.poll(&mut [&mut serial]);
-    //     };
-    // }
-    //
-    // let usb_start = timer.get_counter();
-    // loop {
-    //     usb_dev.poll(&mut [&mut serial]);
-    //     if serial.dtr() {
-    //         break; // хост открыл порт
-    //     }
-    //     if timer.get_counter().ticks() - usb_start.ticks() > 10_000_000 {
-    //         break; // таймаут, едем дальше без хоста
-    //     }
-    // }
-
-    // Стартовые сообщения
-    // log::info!("=== PICO PROFIBUS MASTER ===");
-    // log::info!("Master addr: {}, Slave addr: {}", MASTER_ADDRESS, IO_ADDRESS);
-    // log::info!("Slave ident: 0x{:04x}", SLAVE_IDENT);
-    // log::info!("Baudrate: {:?}", BAUDRATE);
-    // flush!();
-
     // ===== UART =====
     let uart_pins = (
         pins.gpio0.into_function(),
@@ -107,17 +65,53 @@ fn main() -> ! {
     );
     let uart = hal::uart::UartPeripheral::new(pac.UART0, uart_pins, &mut pac.RESETS);
     let dir_pin = pins.gpio2.into_push_pull_output();
-    let mut phy_buffer = [0u8; 256];
+    let mut phy_buffer = [0u8; 512];
     let mut phy = phy::Rp2040Phy::new(
         uart,
         dir_pin,
         &clocks.peripheral_clock,
         &mut phy_buffer[..],
         BAUDRATE,
-    )
-    .unwrap();
+    ).unwrap();
     // log::info!("PHY UART initialized");
     // flush!();
+
+    // ===== USB =====
+    let usbctrl_regs = pac.USBCTRL_REGS;
+    let usbctrl_dpram = pac.USBCTRL_DPRAM;
+    let usb_clock = clocks.usb_clock;
+    let resets = pac.RESETS;
+
+    let mut mc = Multicore::new(&mut pac.PSM, &mut pac.PPB, &mut sio.fifo);
+    let cores = mc.cores();
+    let core1 = &mut cores[1];
+
+    let _ = core1.spawn(unsafe { &mut *core::ptr::addr_of_mut!(CORE1_STACK.mem) }, move || {
+        let mut resets = resets;
+        let usb_bus = UsbBusAllocator::new(hal::usb::UsbBus::new(
+            usbctrl_regs,
+            usbctrl_dpram,
+            usb_clock,
+            true,
+            &mut resets,
+        ));
+        let mut serial = SerialPort::new(&usb_bus);
+        let mut usb_dev = UsbDeviceBuilder::new(&usb_bus, UsbVidPid(0x16c0, 0x27dd))
+            .strings(&[StringDescriptors::default()
+                .manufacturer("Rahix Automation")
+                .product("PROFIRUST PICO")
+                .serial_number("PICO01")])
+            .unwrap()
+            .device_class(2)
+            .build();
+
+        loop {
+            if serial.dtr() {
+                logger::drain(|buf| serial.write(buf).unwrap_or(0));
+            }
+            usb_dev.poll(&mut [&mut serial]);
+        }
+    });
 
     // ===== DP Master =====
     let mut buffer_inputs = [0u8; 16];
@@ -165,7 +159,8 @@ fn main() -> ! {
     let mut fdl_master = fdl::FdlActiveStation::new(
         fdl::ParametersBuilder::new(MASTER_ADDRESS, BAUDRATE)
             .watchdog_timeout(profirust::time::Duration::from_secs(1))
-            .slot_bits(4000)
+            .slot_bits(600)
+            .highest_station_address(3)
             .max_retry_limit(3)
             .build_verified(&dp_master),
     );
@@ -177,6 +172,8 @@ fn main() -> ! {
     let mut init = false;
     let mut last = profirust::time::Instant::ZERO;
 
+    let mut poll_cycle = 0u32;
+
     loop {
         let now = time::now().unwrap();
 
@@ -185,54 +182,27 @@ fn main() -> ! {
             dp_master.enter_operate();
             init = true;
         }
-        fdl_master.poll(now, &mut phy, &mut dp_master);
 
-        let events = dp_master.take_last_events();
+        // for _ in 0..100 {
+        //     fdl_master.poll(now, &mut phy, &mut dp_master);
+        // }
+        // poll_cycle += 100;
+        //
+        // if poll_cycle >= 10000 {
+        //     poll_cycle = 0;
+        //
+        //     dp_master.statistics().log_summary();
+        //
+        //     logger::drain(|buf| serial.write(buf).unwrap_or(0));
+        //     usb_dev.poll(&mut [&mut serial]);
+        // }
 
-        let io_station = dp_master.get_mut(io_handle);
-        if events.cycle_completed && io_station.is_running() {
-            io_station.pi_q_mut()[0] = if now.secs() % 2 == 0 { 0x55 } else { 0xAA };
+        for _ in 0..500 {
+            fdl_master.poll(now, &mut phy, &mut dp_master);
         }
 
-        if last.secs() != now.secs() {
-            if io_station.is_running() {
-                log::info!("Inputs: DIP={:04b}", (!io_station.pi_i()[3]) & 0b1111);
-            }
-            let _ = led_pin.toggle();
-        }
-
-        logger::drain(|buf| match serial.write(buf) {
-            Ok(n) => n,
-            Err(_) => 0,
-        });
-        usb_dev.poll(&mut [&mut serial]);
+        dp_master.statistics().log_summary();
 
         last = now;
     }
-
-    // let mut bus_error_count = 0u32;
-    //
-    // loop {
-    //     if last.secs() != now.secs() {
-    //         let io_station = dp_master.get_mut(io_handle);
-    //         if io_station.is_running() {
-    //             let inp = io_station.pi_i();
-    //             let adc_val = (inp[0] as u16) << 8 | inp[1] as u16;
-    //             log::info!(
-    //                 "SLAVE OK! ADC: {}, DIP: 0x{:02x}, bytes: {:02x} {:02x} {:02x} {:02x}",
-    //                 adc_val, inp[2], inp[0], inp[1], inp[2], inp[3]
-    //             );
-    //             led_pin.toggle().ok();
-    //         } else {
-    //             bus_error_count += 1;
-    //             log::info!(
-    //                 "Waiting for slave #{}... (t={}s, errors={})",
-    //                 IO_ADDRESS, now.secs(), bus_error_count
-    //             );
-    //             led_pin.toggle().ok();
-    //         }
-    //         flush!();
-    //     }
-
-    // }
 }

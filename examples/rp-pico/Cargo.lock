@@ -356,6 +356,7 @@ version = "0.0.0"
 dependencies = [
  "cortex-m",
  "cortex-m-rt",
+ "critical-section",
  "embedded-hal 0.2.7",
  "fugit",
  "heapless",

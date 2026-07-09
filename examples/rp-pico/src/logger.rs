@@ -1,12 +1,12 @@
 use core::fmt::Write;
-use cortex_m::interrupt;
+use critical_section::Mutex;
 
 struct RingBuffer {
-    buffer: heapless::Deque<u8, 4096>,
+    buffer: heapless::Deque<u8, 8192>,
 }
 
 struct RingBufferLogger {
-    buffer: interrupt::Mutex<core::cell::RefCell<RingBuffer>>,
+    buffer: Mutex<core::cell::RefCell<RingBuffer>>,
 }
 
 impl log::Log for RingBufferLogger {
@@ -22,7 +22,7 @@ impl log::Log for RingBufferLogger {
             log::Level::Info => "",
             log::Level::Debug | log::Level::Trace => "\x1B[2m",
         };
-        cortex_m::interrupt::free(|cs| {
+        critical_section::with(|cs| {
             let mut buffer = self.buffer.borrow(cs).borrow_mut();
             if let Some(module_path) = record.module_path() {
                 let _ = write!(
@@ -82,7 +82,7 @@ impl core::fmt::Write for RingBuffer {
 }
 
 static LOGGER: RingBufferLogger = RingBufferLogger {
-    buffer: interrupt::Mutex::new(core::cell::RefCell::new(RingBuffer {
+    buffer: Mutex::new(core::cell::RefCell::new(RingBuffer {
         buffer: heapless::Deque::new(),
     })),
 };
@@ -96,7 +96,7 @@ pub fn init() {
 }
 
 pub fn drain<F: FnMut(&[u8]) -> usize>(mut f: F) {
-    cortex_m::interrupt::free(|cs| {
+    critical_section::with(|cs| {
         let mut buffer = LOGGER.buffer.borrow(cs).borrow_mut();
         let (slice1, slice2) = buffer.buffer.as_slices();
         let mut length = f(slice1);

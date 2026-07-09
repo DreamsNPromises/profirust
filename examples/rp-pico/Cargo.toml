@@ -25,6 +25,7 @@ process-image = "0.2.1"
 rp-pico = "0.9"
 usb-device = "0.3.2"
 usbd-serial = "0.2.2"
+critical-section = "1.2.0"
 
 [dependencies.log]
 version = "0.4.20"
@@ -35,7 +36,7 @@ features = ["max_level_debug"]
 path = "../../"
 version = "0.6.0"
 default-features = false
-features = ["phy-rp2040"]
+features = ["phy-rp2040", "debug-measure-dp-cycle", "statistics"]
 
 # [patch.crates-io]
 # rp2040-hal = { git = "https://github.com/rahix/rp-hal.git", rev = "6baaf07b0ac2017dbbea1ba8cf5986b74cd81104" }
