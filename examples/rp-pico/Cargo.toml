@@ -30,7 +30,7 @@ critical-section = "1.2.0"
 [dependencies.log]
 version = "0.4.20"
 # Change this to use a different log level:
-features = ["max_level_debug"]
+features = ["max_level_trace"]
 
 [dependencies.profirust]
 path = "../../"

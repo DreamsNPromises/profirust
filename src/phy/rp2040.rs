@@ -161,6 +161,7 @@ where
                 if !busy {
                     self.data.make_rx();
                     self.dir_pin.set_low().ok().unwrap();
+                    log::trace!("PHY: switched to RX");
                 }
                 busy
             }
@@ -224,6 +225,12 @@ where
                         0
                     }
                 };
+
+                let log_len = core::cmp::min(*length, 20);
+                if log_len > 0 {
+                    log::trace!("PHY RX raw bytes: {:02X?}", &buffer[..log_len]);
+                }
+
                 debug_assert!(*length <= buffer.len());
                 let (drop, res) = f(&buffer[..*length]);
                 match drop {

@@ -21,7 +21,7 @@ mod time;
 const IO_ADDRESS: u8 = 3;
 const SLAVE_IDENT: u16 = 0x0008;
 const MASTER_ADDRESS: u8 = 2;
-const BAUDRATE: Baudrate = Baudrate::B500000;
+const BAUDRATE: Baudrate = Baudrate::B9600;
 
 #[bsp::entry]
 fn main() -> ! {
