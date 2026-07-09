@@ -4,6 +4,95 @@ use rp2040_hal::uart;
 use fugit::RateExtU32;
 use rp2040_hal::Clock;
 
+use rp2040_hal::pac;
+use rp2040_hal::pac::interrupt;
+use cortex_m::interrupt::Mutex;
+use core::cell::RefCell;
+
+pub static IRQ_HITS: Mutex<RefCell<u32>> = Mutex::new(RefCell::new(0));
+pub static BYTES_SEEN: Mutex<RefCell<u32>> = Mutex::new(RefCell::new(0));
+
+const RING_CAP: usize = 512;
+
+struct RxRing {
+    buffer: [u8; RING_CAP],
+    head: usize,
+    tail: usize,
+    len: usize,
+}
+
+impl RxRing {
+    const fn new() -> Self {
+        RxRing { buffer: [0; RING_CAP], head: 0, tail: 0, len: 0 }
+    }
+
+    fn push(&mut self, byte: u8) {
+        if self.len == RING_CAP {
+            // переполнение: либо дропаем новый байт, либо сдвигаем tail —
+            // на первом шаге просто считаем событие и дропаем новый байт
+            return;
+        }
+        self.buffer[self.head] = byte;
+        self.head = (self.head + 1) % RING_CAP;
+        self.len += 1;
+    }
+
+    fn pop(&mut self) -> Option<u8> {
+        if self.len == 0 {
+            None
+        } else {
+            let byte = self.buffer[self.tail];
+            self.tail = (self.tail + 1) % RING_CAP;
+            self.len -= 1;
+            Some(byte)
+        }
+    }
+
+    fn available(&self) -> usize {
+        if self.head >= self.tail {
+            self.head - self.tail
+        } else {
+            self.buffer.len() - (self.tail - self.head)
+        }
+    }
+}
+
+static RX_RING: Mutex<RefCell<RxRing>> = Mutex::new(RefCell::new(RxRing::new()));
+
+#[interrupt]
+fn UART0_IRQ() {
+    let uart = unsafe { &*pac::UART0::ptr() };
+
+    if !uart.uartfr().read().rxfe().bit_is_set() {
+        cortex_m::interrupt::free(|cs| {
+            *IRQ_HITS.borrow(cs).borrow_mut() += 1;
+            let mut ring = RX_RING.borrow(cs).borrow_mut();
+
+            while uart.uartfr().read().rxfe().bit_is_clear() {
+                let byte = uart.uartdr().read().data().bits();
+                ring.push(byte);
+                *BYTES_SEEN.borrow(cs).borrow_mut() += 1;
+            }
+        });
+    }
+
+    uart.uarticr().write(|w| unsafe {
+        // 0b01111110 (Clear all mask bits at once)
+        w.bits(0x7E)
+    });
+
+    // uart.uarticr().write(|w| {
+    //     w.rtic().clear_bit_by_one();   // Receive interrupt
+    //     w.oeic().clear_bit_by_one();   // Overrun error
+    //     w.beic().clear_bit_by_one();   // Break error
+    //     w.peic().clear_bit_by_one();   // Parity error
+    //     w.feic().clear_bit_by_one();   // Framing error
+    //     w
+    // });
+
+    // uart.uarticr().write(|w| w.rtic().clear_bit_by_one());
+}
+
 #[derive(Debug)]
 enum PhyData<'a> {
     Rx {
@@ -103,7 +192,7 @@ where
         buffer: impl Into<crate::phy::BufferHandle<'a>>,
         baudrate: crate::Baudrate,
     ) -> Result<Self, uart::Error> {
-        let uart = uart.enable(
+        let mut uart = uart.enable(
             uart::UartConfig::new(
                 u32::try_from(baudrate.to_rate()).unwrap().Hz(),
                 uart::DataBits::Eight,
@@ -115,6 +204,12 @@ where
 
         // Go into RX mode.
         dir_pin.set_low().ok().unwrap();
+
+        uart.enable_rx_interrupt();
+        // unsafe { pac::NVIC::unmask(pac::Interrupt::UART0_IRQ); }
+        let imsc = unsafe { (*pac::UART0::ptr()).uartimsc().read().bits() };
+        log::info!("UARTIMSC = {:#012b}", imsc);
+        unsafe { pac::NVIC::unmask(pac::Interrupt::UART0_IRQ); }
 
         Ok(Self {
             uart,
@@ -161,6 +256,26 @@ where
                 if !busy {
                     self.data.make_rx();
                     self.dir_pin.set_low().ok().unwrap();
+
+                    for _ in 0..1000 {
+                        cortex_m::asm::nop();
+                    }
+
+                    let uart = unsafe { &*pac::UART0::ptr() };
+                    uart.uarticr().write(|w| unsafe {
+                        w.bits(0x7E)
+                    });
+
+                    // while self.uart.uart_is_readable() {
+                    //     let _ = self.uart.read_raw(&mut [0u8; 1]);
+                    // }
+
+                    // cortex_m::interrupt::free(|cs| {
+                    //     let mut ring = RX_RING.borrow(cs).borrow_mut();
+                    //     while ring.pop().is_some() {}
+                    // });
+
+                    self.uart.enable_rx_interrupt();
                 }
                 busy
             }
@@ -193,9 +308,19 @@ where
 
                 // We enable the transmitter here and then wait for Tset before poll_transmission()
                 // will start scheduling bytes for transmission.
+                self.uart.disable_rx_interrupt();
                 self.dir_pin.set_high().ok().unwrap();
                 // TODO: Tset is not always 1 bit time
-                let t_set = self.baudrate.bits_to_time(1);
+                // let t_set = self.baudrate.bits_to_time(1);
+                let t_set = self.baudrate.bits_to_time(
+                    if self.baudrate.to_rate() >= 6_000_000 {
+                        15
+                    } else if self.baudrate.to_rate() > 1_500_000 {
+                        5
+                    } else {
+                        1
+                    }
+                );
 
                 let buffer = core::mem::replace(buffer, (&mut [][..]).into());
                 self.data = PhyData::Tx {
@@ -216,14 +341,19 @@ where
         match &mut self.data {
             PhyData::Tx { .. } => panic!("receive_data() while transmitting!"),
             PhyData::Rx { buffer, length } => {
-                *length += match self.uart.read_raw(&mut buffer[*length..]) {
-                    Ok(l) => l,
-                    Err(nb::Error::WouldBlock) => 0,
-                    Err(nb::Error::Other(_)) => {
-                        // TODO: handle uart errors
-                        0
+                cortex_m::interrupt::free(|cs| {
+                    let mut ring = RX_RING.borrow(cs).borrow_mut();
+                    while *length < buffer.len() {
+                        match ring.pop() {
+                            Some(b) => {
+                                buffer[*length] = b;
+                                *length += 1;
+                            }
+                            None => break,
+                        }
                     }
-                };
+                });
+
                 debug_assert!(*length <= buffer.len());
                 let (drop, res) = f(&buffer[..*length]);
                 match drop {
@@ -233,12 +363,8 @@ where
                         // TODO: Properly implement partial buffer drops here as well. It isn't
                         // that important because this shouldn't really ever happen on a
                         // microcontroller, but having it may be needed somewhere someday anyway...
-                        log::warn!(
-                            "ignoring partial drop of receive buffer ({} of {})",
-                            d,
-                            *length
-                        );
-                        *length = 0;
+                        buffer.copy_within(d..*length, 0);
+                        *length -= d;
                     }
                 }
                 res

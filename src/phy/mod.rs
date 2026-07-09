@@ -28,6 +28,8 @@ pub use simulator::SimulatorPhy;
 mod rp2040;
 #[cfg(feature = "phy-rp2040")]
 pub use rp2040::Rp2040Phy;
+#[cfg(feature = "phy-rp2040")]
+pub use rp2040::{IRQ_HITS, BYTES_SEEN};
 
 /// Type alias for the message buffer used by some PHY implementations
 pub type BufferHandle<'a> = managed::ManagedSlice<'a, u8>;
