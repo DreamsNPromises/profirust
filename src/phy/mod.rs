@@ -29,6 +29,11 @@ mod rp2040;
 #[cfg(feature = "phy-rp2040")]
 pub use rp2040::Rp2040Phy;
 
+#[cfg(feature = "phy-rp2040")]
+mod rp2040_pio;
+#[cfg(feature = "phy-rp2040")]
+pub use rp2040_pio::Rp2040PioPhy;
+
 /// Type alias for the message buffer used by some PHY implementations
 pub type BufferHandle<'a> = managed::ManagedSlice<'a, u8>;
 

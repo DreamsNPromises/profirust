@@ -11,6 +11,10 @@ use usbd_serial::SerialPort;
 use profirust::{dp, fdl, phy, Baudrate};
 
 use hal::multicore::{Multicore, Stack};
+use rp2040_hal::{
+    gpio::FunctionPio0,
+    pio::PIOExt,
+};
 
 static mut CORE1_STACK: Stack<4096> = Stack::new();
 
@@ -58,23 +62,51 @@ fn main() -> ! {
 
     let mut led_pin = pins.led.into_push_pull_output();
 
+    // // ===== PIO setup (NEW) =====
+    // // Split PIO0 into its 4 state machines.  We'll use SM0.
+    // let (mut pio, sm0, _sm1, _sm2, _sm3) = pac.PIO0.split(&mut pac.RESETS);
+    //
+    // // GPIO0 = UART TX → also PIO input (PIO watches TX to detect start bit)
+    // let tx_pin = pins.gpio0.into_mode();
+    // let tx_pio_pin = pio.common.make_pio_pin(tx_pin);
+    //
+    // // GPIO2 = DE → PIO output (PIO drives RS-485 direction)
+    // let de_pin = pins.gpio2.into_mode();
+    // let de_pio_pin = pio.common.make_pio_pin(de_pin);
+    //
+    // // Configure SM0: TX as input, DE as output (set pin)
+    // sm0.set_in_pins(&[&tx_pio_pin]);
+    // sm0.set_set_pins(&[&de_pio_pin]);
+    // sm0.set_pin_directions(PioDirection::In, &[&tx_pio_pin]);
+    // sm0.set_pin_directions(PioDirection::Out, &[&de_pio_pin]);
+    //
+    // // GPIO2 as OutputPin (needed for constructor signature, not actually used)
+    // let dir_pin = pins.gpio2.into_push_pull_output();
+
+    // ===== PIO + DE =====
+    // GPIO2 → PIO0 (управляется state machine, не CPU)
+    let _de_pio = pins.gpio2.into_mode::<FunctionPio0>();
+
+    // Разделяем PIO0 на PIO + 4 UninitStateMachine
+    let (pio, sm0, _sm1, _sm2, _sm3) = pac.PIO0.split(&mut pac.RESETS);
+
     // ===== UART =====
     let uart_pins = (
         pins.gpio0.into_function(),
         pins.gpio1.into_function(),
     );
     let uart = hal::uart::UartPeripheral::new(pac.UART0, uart_pins, &mut pac.RESETS);
-    let dir_pin = pins.gpio2.into_push_pull_output();
+
+    // let dir_pin = pins.gpio2.into_push_pull_output();
     let mut phy_buffer = [0u8; 512];
-    let mut phy = phy::Rp2040Phy::new(
+    let mut phy = phy::Rp2040PioPhy::new(
         uart,
-        dir_pin,
+        pio,
+        sm0,
         &clocks.peripheral_clock,
         &mut phy_buffer[..],
         BAUDRATE,
     ).unwrap();
-    // log::info!("PHY UART initialized");
-    // flush!();
 
     // ===== USB =====
     let usbctrl_regs = pac.USBCTRL_REGS;

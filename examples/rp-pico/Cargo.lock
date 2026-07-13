@@ -4,9 +4,9 @@ version = 4
 
 [[package]]
 name = "arrayvec"
-version = "0.7.6"
+version = "0.7.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7c02d123df017efcdfbd739ef81735b36c5ba83ec3c59c80a9d7ecc718f92e50"
+checksum = "d3fb67a6e08acf24fdeccbac2cb6ac4305825bd1f117462e0e6f2f193345ad56"
 
 [[package]]
 name = "bare-metal"
@@ -339,6 +339,7 @@ checksum = "1c1de5542ea7a8e8654e93e3d00b28c1f3318f95b0f270240685c9eeeb300986"
 name = "profirust"
 version = "0.6.0"
 dependencies = [
+ "arrayvec",
  "bitflags",
  "bitvec",
  "cortex-m",
@@ -347,6 +348,7 @@ dependencies = [
  "log",
  "managed",
  "nb 1.1.0",
+ "pio",
  "rp2040-hal",
 ]
 
@@ -354,6 +356,7 @@ dependencies = [
 name = "profirust-example-rp-pico"
 version = "0.0.0"
 dependencies = [
+ "arrayvec",
  "cortex-m",
  "cortex-m-rt",
  "critical-section",
@@ -362,9 +365,11 @@ dependencies = [
  "heapless",
  "log",
  "nb 1.1.0",
+ "pio",
  "process-image",
  "profirust",
  "rp-pico",
+ "rp2040-hal",
  "usb-device",
  "usbd-serial",
 ]
