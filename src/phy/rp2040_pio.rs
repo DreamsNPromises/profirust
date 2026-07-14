@@ -1,89 +1,16 @@
 //! PHY implementation for RP2040 using PIO for hardware-accurate DE (RS-485 direction) control.
 //!
-//! Unlike the standard [`Rp2040Phy`], this implementation offloads the DE pin timing
-//! to a PIO state machine.  The PIO watches the UART TX line, raises DE at the start bit,
-//! and lowers DE exactly after the stop bit — with single-cycle (≈8 ns) precision,
-//! independent of CPU load.
-//!
-//! This is critical for baudrates ≥ 6 Mbit/s where CPU-mediated GPIO toggling
-//! introduces too much jitter.
+//! The PIO state machine watches the UART TX line, raises DE at the start bit,
+//! and lowers DE exactly after the stop bit — independent of CPU load.
 
-use embedded_hal::digital::v2::OutputPin;
 use rp2040_hal::{
-    pac::{self, PIO0},
-    pio::{
-        Buffers, InstalledProgram, PIOBuilder, PinDir, PinState, PIOExt, Running, SM0, Stopped,
-        StateMachine, UninitStateMachine, ValidStateMachine,
-    },
-    uart,
+    clocks::PeripheralClock,
+    // pio::{self, PIOBuilder, PinDir, Running, SM0, StateMachine, UninitStateMachine},
+    pio::{self as rp_pio},
+    uart::{self, UartDevice, ValidUartPinout},
+    Clock,
 };
-use arrayvec::ArrayVec;
-
-use fugit::RateExtU32;
-use rp2040_hal::Clock;
-
-// ---------------------------------------------------------------------------
-// PIO program (raw machine code — no assembler dependency needed)
-// ---------------------------------------------------------------------------
-//
-// Assembly source (for reference):
-//
-//   .wrap_target
-//       wait 0 pin 0       ; wait for TX falling edge (start bit)
-//       set pins, 1        ; raise DE
-//       set x, 8           ; loop counter = 8
-//   delay_loop:
-//       jmp x-- delay_loop  ; 8 iterations (bits 1-8: data + parity)
-//       set pins, 0        ; lower DE (after stop bit)
-//       irq nowait 0       ; signal CPU that transmission is done
-//   .wrap
-//
-// Timing (in PIO clocks, where 1 PIO clock = 1 UART bit time):
-//   t=0  : wait completes           → start bit begins
-//   t=1  : set pins, 1              → DE high, still within start bit
-//   t=2  : set x, 8
-//   t=3-10: 8 × jmp x--             → data bits + parity bit
-//   t=10 : jmp with X=0 falls through
-//   t=11 : set pins, 0              → DE low exactly after stop bit
-//   t=12 : irq nowait 0
-//   t=13 : wrap → back to wait
-//
-// Encoded instructions (see RP2040 datasheet §3.4.2):
-const PIO_INSTRUCTIONS: [u16; 6] = [
-    0x0500, //  0: wait 0 pin 0     (op=WAIT, src=PIN, pol=0, idx=0)
-    0x1C20, //  1: set pins, 1      (op=SET, dst=PINS, data=1)
-    0x1D01, //  2: set x, 8         (op=SET, dst=X, data=8)
-    0x0043, //  3: jmp x-- 3        (op=JMP, cond=X--, addr=3)
-    0x1C00, //  4: set pins, 0      (op=SET, dst=PINS, data=0)
-    0x1800, //  5: irq nowait 0     (op=IRQ, set, nowait, num=0)
-];
-
-// wrap_target = instruction 0, wrap = after instruction 5
-const WRAP_TARGET: u8 = 0;
-const WRAP: u8 = 5;
-
-fn make_program() -> pio::Program<{pio::RP2040_MAX_PROGRAM_SIZE}> {
-    let mut code: ArrayVec<u16, {pio::RP2040_MAX_PROGRAM_SIZE}> = ArrayVec::new();
-    code.try_push(0x2000).unwrap(); //  0: wait 0 pin 0
-    code.try_push(0xA001).unwrap(); //  1: set pins, 1
-    code.try_push(0xA102).unwrap(); //  2: set x, 2
-    code.try_push(0x1B05).unwrap(); //  3: jmp pin  5
-    code.try_push(0x0002).unwrap(); //  4: jmp      2
-    code.try_push(0x0803).unwrap(); //  5: jmp x--  3
-    code.try_push(0xA000).unwrap(); //  6: set pins, 0
-    code.try_push(0x8000).unwrap(); //  7: irq nowait 0
-
-    pio::Program {
-        code,
-        origin: None,
-        wrap: pio::Wrap {
-            source: 7,       // wrap — после последней инструкции
-            target: 0,       // wrap target — первая инструкция
-        },
-        side_set: pio::SideSet::default(),
-    }
-}
-
+use rp2040_hal::fugit::RateExtU32;
 
 // ---------------------------------------------------------------------------
 // PhyData (same as in rp2040.rs)
@@ -116,41 +43,20 @@ impl PhyData<'_> {
 // Rp2040PioPhy
 // ---------------------------------------------------------------------------
 
-pub struct Rp2040PioPhy<'a, D, P>
-where
-    D: uart::UartDevice,
-    P: uart::ValidUartPinout<D>,
-{
+pub struct Rp2040PioPhy<'a, D: UartDevice, P: ValidUartPinout<D>> {
     uart: uart::UartPeripheral<uart::Enabled, D, P>,
-    pio: rp2040_hal::pio::PIO<PIO0>,
-    _sm: StateMachine<(PIO0, SM0), Running>,
+    _sm: rp_pio::StateMachine<(rp2040_hal::pac::PIO0, rp_pio::SM0), rp_pio::Running>,
+    tx_fifo: *mut u32,
     data: PhyData<'a>,
     baudrate: crate::Baudrate,
 }
 
-impl<'a, D, P> Rp2040PioPhy<'a, D, P>
-where
-    D: uart::UartDevice,
-    P: uart::ValidUartPinout<D>,
-{
-    /// Create a new `Rp2040PioPhy`.
-    ///
-    /// * `uart`       — disabled UART peripheral (will be enabled inside).
-    /// * `dir_pin`    — the RS-485 direction pin.  It is **not** used directly; instead
-    ///                  the PIO state machine will drive this GPIO.  The pin is consumed
-    ///                  here only for backwards-compatibility and to ensure it is reserved.
-    /// * `pio_sm`     — a **stopped** PIO state machine, pre-configured with
-    ///   - `sm.set_in_pins(&[&tx_pio_pin])`   (GPIO0 = UART TX)
-    ///   - `sm.set_set_pins(&[&de_pio_pin])`  (GPIO2 = DE)
-    ///   - correct pin directions
-    /// * `per_clock`  — peripheral clock (used for UART baudrate divider).
-    /// * `buffer`     — backing buffer for TX/RX data.
-    /// * `baudrate`   — PROFIBUS baudrate.
+impl<'a, D: UartDevice, P: ValidUartPinout<D>> Rp2040PioPhy<'a, D, P> {
     pub fn new(
         uart: uart::UartPeripheral<uart::Disabled, D, P>,
-        mut pio: rp2040_hal::pio::PIO<PIO0>,
-        uninit_sm: UninitStateMachine<(PIO0, SM0)>,
-        per_clock: &rp2040_hal::clocks::PeripheralClock,
+        mut pio: rp2040_hal::pio::PIO<rp2040_hal::pac::PIO0>,
+        uninit_sm: rp_pio::UninitStateMachine<(rp2040_hal::pac::PIO0, rp_pio::SM0)>,
+        per_clock: &PeripheralClock,
         buffer: impl Into<crate::phy::BufferHandle<'a>>,
         baudrate: crate::Baudrate,
     ) -> Result<Self, uart::Error> {
@@ -165,64 +71,64 @@ where
             per_clock.freq(),
         )?;
 
-        // // ---- Configure PIO clock divider ----
-        // // We want 1 PIO clock = 1 UART bit time.
-        // // clk_div = per_clock_freq / baudrate
-        // let sys_hz = per_clock.freq().raw();
-        // let baud_hz = baudrate.to_rate() as u32;
-        // // Fixed-point 16.8: int = sys_hz / baud_hz, frac = remainder * 256 / baud_hz
-        // let int = (sys_hz / baud_hz) as u16;
-        // let frac = (((sys_hz % baud_hz) as u32) * 256 / baud_hz) as u8;
-        // sm.set_clkdiv_int_frac(int, frac);
+        // ---- PIO program (assembler) ----
+        let mut a = pio::Assembler::<32>::new();
+        let mut wrap_target = a.label();
+        let mut wrap_source = a.label();
+        let mut de_low = a.label();
 
-        // // ---- Load PIO program and start ----
-        // let program = pio_program();
-        // let installed = sm.load_program(&program);
-        // let running_sm = installed.start();
-        //
-        // Ok(Self {
-        //     uart,
-        //     sm: running_sm,
-        //     data: PhyData::Rx {
-        //         buffer: buffer.into(),
-        //         length: 0,
-        //     },
-        //     baudrate,
-        // })
+        a.bind(&mut wrap_target);
 
-        // ---- Собрать PIO-программу ----
-        // `pio` crate: Program — кортежная структура (code: [u16; 32], wrap_target, wrap)
-        // let mut code = [0u16; pio::RP2040_MAX_PROGRAM_SIZE as usize];
-        // code[..PIO_INSTRUCTIONS.len()].copy_from_slice(&PIO_INSTRUCTIONS);
-        let program = make_program();
+        a.pull(false, true);
+        a.mov(::pio::MovDestination::X, ::pio::MovOperation::None, ::pio::MovSource::OSR);
+        a.jmp(::pio::JmpCondition::XIsZero, &mut de_low);
+        // a.wait(0, ::pio::WaitSource::PIN, 0, false);      // wait 0 pin 0
 
-        // ---- Установить программу в PIO ----
+        a.set_with_delay(::pio::SetDestination::PINS, 1, 0);       // set pins, 1
+
+        a.jmp(::pio::JmpCondition::Always, &mut wrap_target);
+        a.bind(&mut de_low);
+        // a.set(::pio::SetDestination::X, 8);                        // set x, 8
+        // let mut delay_loop = a.label();
+        // a.bind(&mut delay_loop);
+
+        // a.jmp(::pio::JmpCondition::XDecNonZero, &mut delay_loop);  // jmp x-- delay_loop
+        a.wait(1, ::pio::WaitSource::PIN, 0, false);
+
+        a.set_with_delay(::pio::SetDestination::PINS, 0, 0);       // set pins, 0
+        a.bind(&mut wrap_source);
+        let program = a.assemble_with_wrap(wrap_source, wrap_target);
+
         let installed = pio.install(&program).unwrap();
 
+        // ---- Clock divider = per_clock / baudrate ----
         let sys_hz = per_clock.freq().raw();
         let baud_hz = baudrate.to_rate() as u32;
         let clk_int = (sys_hz / baud_hz) as u16;
         let clk_frac = (((sys_hz % baud_hz) as u32) * 256 / baud_hz) as u8;
 
-        // ---- Построить конфигурацию SM через PIOBuilder ----
-        // GPIO0 = TX → вход PIO (in_base = 0)
-        // GPIO2 = DE → set-выход PIO (set_base = 2, set_count = 1)
-        let builder = PIOBuilder::from_installed_program(installed)
-            .in_pin_base(0)        // GPIO0 → IN
-            .set_pins(2, 1)        // GPIO2 → SET, 1 пин
+        // ---- Build SM ----
+        let (mut sm_stopped, _, _) = rp_pio::PIOBuilder::from_installed_program(installed)
+            .set_pins(2, 1)     // GPIO2 = SET pin 0
+            .in_pin_base(0)           // GPIO0 = IN pin 0
             .clock_divisor_fixed_point(clk_int, clk_frac)
-            .buffers(Buffers::RxTx);
+            .build(uninit_sm);
 
-        // ---- Собрать SM (получаем SM, Rx, Tx) ----
-        let (sm_stopped, _rx, _tx) = builder.build(uninit_sm);
+        // Set pin directions (IN pin = input, SET pin = output)
+        sm_stopped.set_pindirs([
+            (0, rp_pio::PinDir::Input),    // GPIO0 (TX) -> input
+            (2, rp_pio::PinDir::Output),   // GPIO2 (DE) -> output
+        ]);
 
-        // ---- Запустить SM ----
         let sm_running = sm_stopped.start();
+
+        // TX FIFO SM0: base adress PIO0 + 0x010 + 0 * 0x20 = 0x50200010
+        let tx_fifo = 0x5020_0010 as *mut u32;
 
         Ok(Self {
             uart,
-            pio,
             _sm: sm_running,
+            tx_fifo,
             data: PhyData::Rx {
                 buffer: buffer.into(),
                 length: 0,
@@ -236,10 +142,8 @@ where
 // ProfibusPhy implementation
 // ---------------------------------------------------------------------------
 
-impl<'a, D, P> crate::phy::ProfibusPhy for Rp2040PioPhy<'a, D, P>
-where
-    D: uart::UartDevice,
-    P: uart::ValidUartPinout<D>,
+impl<'a, D: UartDevice, P: ValidUartPinout<D>> crate::phy::ProfibusPhy
+for Rp2040PioPhy<'a, D, P>
 {
     fn poll_transmission(&mut self, now: crate::time::Instant) -> bool {
         if let PhyData::Tx {
@@ -249,7 +153,7 @@ where
             start_tx,
         } = &mut self.data
         {
-            // 1. Wait for Tset (bus settling time) if needed
+            // 1. Wait for Tset (bus settling time)
             if now < *start_tx {
                 return true;
             }
@@ -266,20 +170,14 @@ where
                 return true;
             }
 
-            // 3. All bytes written — check if PIO has finished
-            //    PIO raises IRQ0 after the stop bit, signalling DE is low again.
-            // let irq_pending = self.pio.get_irq_raw() & (1 << 0) != 0;
-
-            if self.pio.get_irq_raw() & 0x01 != 0 {
-                // Clear PIO IRQ, transition to RX mode
-                self.pio.clear_irq(0x01);
+            // 3. All bytes written — wait until UART finishes transmitting
+            let busy = self.uart.uart_is_busy();
+            if !busy {
+                unsafe { core::ptr::write_volatile(self.tx_fifo, 0); }
                 self.data.make_rx();
                 log::trace!("PHY PIO: switched to RX");
-                false
-            } else {
-                // Still transmitting (PIO hasn't finished yet)
-                true
             }
+            busy
         } else {
             false
         }
@@ -306,13 +204,8 @@ where
                     return res;
                 }
 
-                // PIO is already watching the TX pin via `wait 0 pin 0`.
-                // It will automatically raise DE when the start bit appears.
-                // Nothing to do here — the PIO is free-running.
-
-                // Tset: wait 1 bit time before actually feeding UART (spec requirement)
+                unsafe { core::ptr::write_volatile(self.tx_fifo, 1); }
                 let t_set = self.baudrate.bits_to_time(1);
-
                 let buffer = core::mem::replace(buffer, (&mut [][..]).into());
                 self.data = PhyData::Tx {
                     buffer,

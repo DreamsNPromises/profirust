@@ -29,9 +29,9 @@ mod rp2040;
 #[cfg(feature = "phy-rp2040")]
 pub use rp2040::Rp2040Phy;
 
-#[cfg(feature = "phy-rp2040")]
+#[cfg(feature = "phy-rp2040-pio")]
 mod rp2040_pio;
-#[cfg(feature = "phy-rp2040")]
+#[cfg(feature = "phy-rp2040-pio")]
 pub use rp2040_pio::Rp2040PioPhy;
 
 /// Type alias for the message buffer used by some PHY implementations
