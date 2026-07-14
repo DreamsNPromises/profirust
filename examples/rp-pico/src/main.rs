@@ -25,7 +25,7 @@ mod time;
 const IO_ADDRESS: u8 = 3;
 const SLAVE_IDENT: u16 = 0x0008;
 const MASTER_ADDRESS: u8 = 2;
-const BAUDRATE: Baudrate = Baudrate::B9600;
+const BAUDRATE: Baudrate = Baudrate::B6000000;
 
 #[bsp::entry]
 fn main() -> ! {
@@ -62,32 +62,9 @@ fn main() -> ! {
 
     let mut led_pin = pins.led.into_push_pull_output();
 
-    // // ===== PIO setup (NEW) =====
-    // // Split PIO0 into its 4 state machines.  We'll use SM0.
-    // let (mut pio, sm0, _sm1, _sm2, _sm3) = pac.PIO0.split(&mut pac.RESETS);
-    //
-    // // GPIO0 = UART TX → also PIO input (PIO watches TX to detect start bit)
-    // let tx_pin = pins.gpio0.into_mode();
-    // let tx_pio_pin = pio.common.make_pio_pin(tx_pin);
-    //
-    // // GPIO2 = DE → PIO output (PIO drives RS-485 direction)
-    // let de_pin = pins.gpio2.into_mode();
-    // let de_pio_pin = pio.common.make_pio_pin(de_pin);
-    //
-    // // Configure SM0: TX as input, DE as output (set pin)
-    // sm0.set_in_pins(&[&tx_pio_pin]);
-    // sm0.set_set_pins(&[&de_pio_pin]);
-    // sm0.set_pin_directions(PioDirection::In, &[&tx_pio_pin]);
-    // sm0.set_pin_directions(PioDirection::Out, &[&de_pio_pin]);
-    //
-    // // GPIO2 as OutputPin (needed for constructor signature, not actually used)
-    // let dir_pin = pins.gpio2.into_push_pull_output();
-
     // ===== PIO + DE =====
-    // GPIO2 → PIO0 (управляется state machine, не CPU)
+    // GPIO2 → PIO0
     let _de_pio = pins.gpio2.into_mode::<FunctionPio0>();
-
-    // Разделяем PIO0 на PIO + 4 UninitStateMachine
     let (pio, sm0, _sm1, _sm2, _sm3) = pac.PIO0.split(&mut pac.RESETS);
 
     // ===== UART =====
@@ -97,7 +74,6 @@ fn main() -> ! {
     );
     let uart = hal::uart::UartPeripheral::new(pac.UART0, uart_pins, &mut pac.RESETS);
 
-    // let dir_pin = pins.gpio2.into_push_pull_output();
     let mut phy_buffer = [0u8; 512];
     let mut phy = phy::Rp2040PioPhy::new(
         uart,
@@ -108,7 +84,7 @@ fn main() -> ! {
         BAUDRATE,
     ).unwrap();
 
-    // ===== USB =====
+    // ===== USB (second core) =====
     let usbctrl_regs = pac.USBCTRL_REGS;
     let usbctrl_dpram = pac.USBCTRL_DPRAM;
     let usb_clock = clocks.usb_clock;
@@ -191,14 +167,11 @@ fn main() -> ! {
     let mut fdl_master = fdl::FdlActiveStation::new(
         fdl::ParametersBuilder::new(MASTER_ADDRESS, BAUDRATE)
             .watchdog_timeout(profirust::time::Duration::from_secs(1))
-            .slot_bits(600)
+            .slot_bits(1000)
             .highest_station_address(3)
             .max_retry_limit(3)
             .build_verified(&dp_master),
     );
-
-    // log::info!("Init complete, entering main loop");
-    // flush!();
 
     // ===== MAIN LOOP =====
     let mut init = false;
@@ -208,7 +181,6 @@ fn main() -> ! {
 
     loop {
         let now = time::now().unwrap();
-
         if !init && now.secs() > 1 {
             fdl_master.set_online();
             dp_master.enter_operate();
@@ -232,9 +204,7 @@ fn main() -> ! {
         for _ in 0..500 {
             fdl_master.poll(now, &mut phy, &mut dp_master);
         }
-
         dp_master.statistics().log_summary();
-
         last = now;
     }
 }
