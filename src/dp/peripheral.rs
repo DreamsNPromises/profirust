@@ -348,7 +348,7 @@ impl<'a> Peripheral<'a> {
         if self.state != PeripheralState::Offline && self.retry_count == 1 {
             log::warn!("Resending a telegram to #{}...", self.address);
             #[cfg(feature = "statistics")]
-            dp.statistics.retries.set(dp.statistics.retries.get() + 1);
+            dp.statistics.inc_retries();
         }
 
         let res = match self.state {
@@ -357,7 +357,8 @@ impl<'a> Peripheral<'a> {
                 // when it comes back.
                 log::warn!("Peripheral #{} stopped responding!", self.address);
                 #[cfg(feature = "statistics")]
-                dp.statistics.offline_events.set(dp.statistics.offline_events.get() + 1);
+                dp.statistics.inc_offline();
+
                 self.state = PeripheralState::Offline;
                 Err((tx, Some(PeripheralEvent::Offline)))
             }
@@ -563,7 +564,8 @@ impl<'a> Peripheral<'a> {
                         self.retry_count = 0;
                         self.diag_needed = false;
                         #[cfg(feature = "statistics")]
-                        dp.statistics.diagnostics_events.set(dp.statistics.diagnostics_events.get() + 1);
+                        dp.statistics.inc_diagnostics();
+
                         Some(PeripheralEvent::Diagnostics)
                     } else {
                         None
@@ -609,7 +611,16 @@ impl<'a> Peripheral<'a> {
                                         self.address, t.pdu, t.pdu.len()
                                     );
                                     #[cfg(feature = "statistics")]
-                                    dp.statistics.data_exchanges.set(dp.statistics.data_exchanges.get() + 1);
+                                    {
+                                        dp.statistics.inc_data_exchanges();
+
+                                        if let Some(expected) = dp.statistics.expected_data.get() {
+                                            if t.pdu.windows(expected.len()).any(|w| w == expected) {
+                                                dp.statistics.inc_correct();
+                                            }
+                                        }
+                                    }
+
                                     self.pi_i.copy_from_slice(t.pdu);
                                     self.state = PeripheralState::DataExchange;
                                     Some(PeripheralEvent::DataExchanged)
@@ -634,8 +645,6 @@ impl<'a> Peripheral<'a> {
                                 );
                                 None
                             } else {
-                                #[cfg(feature = "statistics")]
-                                dp.statistics.data_exchanges.set(dp.statistics.data_exchanges.get() + 1);
                                 self.state = PeripheralState::DataExchange;
                                 Some(PeripheralEvent::DataExchanged)
                             }

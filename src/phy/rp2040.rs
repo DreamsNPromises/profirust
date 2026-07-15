@@ -195,8 +195,9 @@ where
                 // We enable the transmitter here and then wait for Tset before poll_transmission()
                 // will start scheduling bytes for transmission.
                 self.dir_pin.set_high().ok().unwrap();
-                // TODO: Tset is not always 1 bit time
-                let t_set = self.baudrate.bits_to_time(1);
+
+                let t_set_bits = self.baudrate.tset_bits();
+                let t_set = self.baudrate.bits_to_time(t_set_bits);
 
                 let buffer = core::mem::replace(buffer, (&mut [][..]).into());
                 self.data = PhyData::Tx {

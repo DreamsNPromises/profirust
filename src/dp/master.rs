@@ -239,9 +239,7 @@ impl<'a> DpMaster<'a> {
             }
 
             #[cfg(feature = "statistics")]
-            self.state.statistics.cycles_completed.set(
-                self.state.statistics.cycles_completed.get() + 1
-            );
+            self.state.statistics.inc_cycles();
 
             self.state.cycle_state = CycleState::CycleCompleted;
             true
@@ -342,11 +340,6 @@ impl<'a> crate::fdl::FdlApplication for DpMaster<'a> {
                     Err((tx_returned, event)) => {
                         tx = tx_returned;
 
-                        #[cfg(feature = "statistics")]
-                        if event.is_none() {
-                            self.state.statistics.timeouts.set(self.state.statistics.timeouts.get() + 1);
-                        }
-
                         if let Some(event) = event {
                             // If we get here and peripheral_event were already filled, we would
                             // end up with the problem that only one event can be reported.
@@ -394,6 +387,11 @@ impl<'a> crate::fdl::FdlApplication for DpMaster<'a> {
         match self.peripherals.get_at_index_mut(index) {
             Some((handle, peripheral)) if addr == peripheral.address() => {
                 let event = peripheral.receive_reply(now, &self.state, fdl, telegram);
+                #[cfg(feature = "statistics")]
+                if let Some(crate::dp::PeripheralEvent::DataExchanged) = &event {
+                    self.state.statistics.mark_first_data_exchanged();
+                }
+
                 let cycle_completed = self.increment_cycle_state(index, now);
                 self.state.last_events = DpEvents {
                     cycle_completed,
@@ -414,6 +412,9 @@ impl<'a> crate::fdl::FdlApplication for DpMaster<'a> {
         fdl: &crate::fdl::FdlActiveStation,
         addr: u8,
     ) {
+        #[cfg(feature = "statistics")]
+        self.state.statistics.inc_timeouts();
+
         // At this time, there is no meaningful action to take in response to this.  Timeout
         // handling is actually done as part of the transmit_telegram() code.
         //

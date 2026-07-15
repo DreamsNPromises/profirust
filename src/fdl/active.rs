@@ -1346,7 +1346,7 @@ impl FdlActiveStation {
             }
             Ok(GapPollResponse::UnexpectedTelegram) => {
                 // TODO: For now, let's play it safe and back off from the bus entirely if an
-                // unexpected telegram is received.
+                // unexpected telegram is received..
                 // Ref: wohp7Aex
                 self.state.transition_active_idle();
                 PollDone::waiting_for_bus()

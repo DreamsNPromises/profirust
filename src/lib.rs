@@ -141,6 +141,23 @@ impl Baudrate {
         }
     }
 
+    /// Return the transmitter setup time *T<sub>SET</sub>* in bit times.
+    pub const fn tset_bits(self) -> u32 {
+        match self {
+            Baudrate::B9600
+            | Baudrate::B19200
+            | Baudrate::B31250
+            | Baudrate::B45450
+            | Baudrate::B93750
+            | Baudrate::B187500
+            | Baudrate::B500000
+            | Baudrate::B1500000 => 1,
+            Baudrate::B3000000 => 4,
+            Baudrate::B6000000 => 8,
+            Baudrate::B12000000 => 16,
+        }
+    }
+
     /// At this baudrate, return how long a given number of bits take to transmit.
     pub fn bits_to_time(self, bits: u32) -> crate::time::Duration {
         crate::time::Duration::from_micros(u64::from(bits) * 1000000 / self.to_rate())

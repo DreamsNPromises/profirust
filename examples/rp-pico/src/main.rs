@@ -21,7 +21,7 @@ mod time;
 const IO_ADDRESS: u8 = 3;
 const SLAVE_IDENT: u16 = 0x0008;
 const MASTER_ADDRESS: u8 = 2;
-const BAUDRATE: Baudrate = Baudrate::B9600;
+const BAUDRATE: Baudrate = Baudrate::B3000000;
 
 #[bsp::entry]
 fn main() -> ! {
@@ -158,8 +158,8 @@ fn main() -> ! {
 
     let mut fdl_master = fdl::FdlActiveStation::new(
         fdl::ParametersBuilder::new(MASTER_ADDRESS, BAUDRATE)
-            .watchdog_timeout(profirust::time::Duration::from_secs(1))
-            .slot_bits(600)
+            .watchdog_timeout(profirust::time::Duration::from_secs(2))
+            .slot_bits(4000)
             .highest_station_address(3)
             .max_retry_limit(3)
             .build_verified(&dp_master),
