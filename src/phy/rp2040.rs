@@ -82,12 +82,32 @@ impl PhyData<'_> {
 /// )
 /// .unwrap();
 /// ```
-#[derive(Debug)]
+
 pub struct Rp2040Phy<'a, UART, DIR> {
     uart: UART,
     dir_pin: DIR,
     data: PhyData<'a>,
     baudrate: crate::Baudrate,
+    timer: rp2040_hal::Timer,
+    tset_us: u64,
+    tqui_us: u64,
+}
+
+impl<'a, UART, DIR> core::fmt::Debug for Rp2040Phy<'a, UART, DIR>
+where
+    UART: core::fmt::Debug,
+    DIR: core::fmt::Debug,
+{
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Rp2040Phy")
+            .field("uart", &self.uart)
+            .field("dir_pin", &self.dir_pin)
+            .field("data", &self.data)
+            .field("baudrate", &self.baudrate)
+            .field("tset_us", &self.tset_us)
+            .field("tqui_us", &self.tqui_us)
+            .finish()
+    }
 }
 
 impl<'a, D, P, DIR> Rp2040Phy<'a, uart::UartPeripheral<uart::Enabled, D, P>, DIR>
@@ -100,6 +120,7 @@ where
         uart: uart::UartPeripheral<uart::Disabled, D, P>,
         mut dir_pin: DIR,
         per_clock: &rp2040_hal::clocks::PeripheralClock,
+        timer: rp2040_hal::Timer,
         buffer: impl Into<crate::phy::BufferHandle<'a>>,
         baudrate: crate::Baudrate,
     ) -> Result<Self, uart::Error> {
@@ -113,6 +134,9 @@ where
             per_clock.freq(),
         )?;
 
+        let tset_us = (baudrate.tset_bits() as u64 * 1_000_000 + baudrate.to_rate() - 1) / baudrate.to_rate();
+        let tqui_us = (baudrate.tqui_bits() as u64 * 1_000_000 + baudrate.to_rate() - 1) / baudrate.to_rate();
+
         // Go into RX mode.
         dir_pin.set_low().ok().unwrap();
 
@@ -124,7 +148,16 @@ where
                 length: 0,
             },
             baudrate,
+            timer,
+            tset_us,
+            tqui_us,
         })
+    }
+
+    fn busy_wait_us(timer: &rp2040_hal::Timer, us: u64) {
+        if us == 0 { return; }
+        let start = timer.get_counter().ticks();
+        while timer.get_counter().ticks().wrapping_sub(start) < us {}
     }
 }
 
@@ -159,6 +192,7 @@ where
             } else {
                 let busy = self.uart.uart_is_busy();
                 if !busy {
+                    Self::busy_wait_us(&self.timer, self.tqui_us);
                     self.data.make_rx();
                     self.dir_pin.set_low().ok().unwrap();
                     log::trace!("PHY: switched to RX");
@@ -195,23 +229,21 @@ where
                 // We enable the transmitter here and then wait for Tset before poll_transmission()
                 // will start scheduling bytes for transmission.
                 self.dir_pin.set_high().ok().unwrap();
-
-                let t_set_bits = self.baudrate.tset_bits();
-                let t_set = self.baudrate.bits_to_time(t_set_bits);
+                Self::busy_wait_us(&self.timer, self.tset_us);
 
                 let buffer = core::mem::replace(buffer, (&mut [][..]).into());
                 self.data = PhyData::Tx {
                     buffer,
                     length,
                     cursor: 0,
-                    start_tx: now + t_set,
+                    start_tx: now,
                 };
                 res
             }
         }
     }
 
-    fn receive_data<F, R>(&mut self, _now: crate::time::Instant, f: F) -> R
+    fn receive_data<F, R>(&mut self, now: crate::time::Instant, f: F) -> R
     where
         F: FnOnce(&[u8]) -> (usize, R),
     {

@@ -11,17 +11,19 @@ use usbd_serial::SerialPort;
 use profirust::{dp, fdl, phy, Baudrate};
 
 use hal::multicore::{Multicore, Stack};
+use rp2040_hal::Clock;
 
 static mut CORE1_STACK: Stack<4096> = Stack::new();
 
 mod logger;
 mod panic_handler;
 mod time;
+mod overclock;
 
 const IO_ADDRESS: u8 = 3;
 const SLAVE_IDENT: u16 = 0x0008;
 const MASTER_ADDRESS: u8 = 2;
-const BAUDRATE: Baudrate = Baudrate::B3000000;
+const BAUDRATE: Baudrate = Baudrate::B12000000;
 
 #[bsp::entry]
 fn main() -> ! {
@@ -33,21 +35,23 @@ fn main() -> ! {
     let mut watchdog = Watchdog::new(pac.WATCHDOG);
     let mut sio = Sio::new(pac.SIO);
 
-    let external_xtal_freq_hz = 12_000_000u32;
-    let clocks = init_clocks_and_plls(
-        external_xtal_freq_hz,
+    let clocks = overclock::init_clocks_192mhz(
         pac.XOSC,
         pac.CLOCKS,
         pac.PLL_SYS,
         pac.PLL_USB,
+        &mut pac.VREG_AND_CHIP_RESET,
         &mut pac.RESETS,
         &mut watchdog,
-    )
-    .ok()
-    .unwrap();
+    ).ok().unwrap();
 
     let timer = hal::Timer::new(pac.TIMER, &mut pac.RESETS, &clocks);
     unsafe { time::init(timer); }
+
+    log::info!(
+        "System clock: {} Hz",
+        clocks.system_clock.freq().to_Hz(),
+    );
 
     let pins = bsp::Pins::new(
         pac.IO_BANK0,
@@ -70,11 +74,10 @@ fn main() -> ! {
         uart,
         dir_pin,
         &clocks.peripheral_clock,
+        timer,
         &mut phy_buffer[..],
         BAUDRATE,
     ).unwrap();
-    // log::info!("PHY UART initialized");
-    // flush!();
 
     // ===== USB =====
     let usbctrl_regs = pac.USBCTRL_REGS;
@@ -106,9 +109,7 @@ fn main() -> ! {
             .build();
 
         loop {
-            if serial.dtr() {
-                logger::drain(|buf| serial.write(buf).unwrap_or(0));
-            }
+            logger::drain(|buf| serial.write(buf).unwrap_or(0));
             usb_dev.poll(&mut [&mut serial]);
         }
     });
@@ -159,20 +160,26 @@ fn main() -> ! {
     let mut fdl_master = fdl::FdlActiveStation::new(
         fdl::ParametersBuilder::new(MASTER_ADDRESS, BAUDRATE)
             .watchdog_timeout(profirust::time::Duration::from_secs(2))
-            .slot_bits(4000)
+            .slot_bits(20000)
             .highest_station_address(3)
             .max_retry_limit(3)
             .build_verified(&dp_master),
     );
-
-    // log::info!("Init complete, entering main loop");
-    // flush!();
 
     // ===== MAIN LOOP =====
     let mut init = false;
     let mut last = profirust::time::Instant::ZERO;
 
     let mut poll_cycle = 0u32;
+    let mut stat_counter = 0u32;
+
+    log::info!(
+        "System clock: {} Hz",
+        clocks.system_clock.freq().to_Hz(),
+    );
+
+    let mut poll_count: u64 = 0u64;
+    let mut last_report = time::now().unwrap();
 
     loop {
         let now = time::now().unwrap();
@@ -183,26 +190,43 @@ fn main() -> ! {
             init = true;
         }
 
-        // for _ in 0..100 {
+        // for _ in 0..2000 {
         //     fdl_master.poll(now, &mut phy, &mut dp_master);
         // }
-        // poll_cycle += 100;
         //
-        // if poll_cycle >= 10000 {
-        //     poll_cycle = 0;
-        //
+        // stat_counter += 1;
+        // if stat_counter >= 100 {
         //     dp_master.statistics().log_summary();
+        //     stat_counter = 0;
+        // }
         //
-        //     logger::drain(|buf| serial.write(buf).unwrap_or(0));
-        //     usb_dev.poll(&mut [&mut serial]);
+        // last = now;
+
+        // for _ in 0..1000 {
+        //     fdl_master.poll(now, &mut phy, &mut dp_master);
+        // }
+        //
+        // if now - last >= profirust::time::Duration::from_millis(500) {
+        //     dp_master.statistics().log_summary();
+        //     last = now;
         // }
 
-        for _ in 0..500 {
+        for _ in 0..128 {
             fdl_master.poll(now, &mut phy, &mut dp_master);
         }
+        poll_count += 1;
 
-        dp_master.statistics().log_summary();
-
-        last = now;
+        if now - last_report >= profirust::time::Duration::from_secs(1) {
+            let elapsed_us = (now - last_report).total_micros();
+            let polls_per_sec = poll_count * 1_000_000 / elapsed_us as u64;
+            log::info!(
+            "poll() rate: {} calls/sec (avg {} ns/call)",
+            polls_per_sec,
+            elapsed_us * 1000 / poll_count
+        );
+            poll_count = 0;
+            last_report = now;
+            dp_master.statistics().log_summary();
+        }
     }
 }

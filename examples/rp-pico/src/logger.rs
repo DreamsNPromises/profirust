@@ -2,7 +2,7 @@ use core::fmt::Write;
 use critical_section::Mutex;
 
 struct RingBuffer {
-    buffer: heapless::Deque<u8, 8192>,
+    buffer: heapless::Deque<u8, 32768>,
 }
 
 struct RingBufferLogger {
@@ -90,7 +90,7 @@ static LOGGER: RingBufferLogger = RingBufferLogger {
 pub fn init() {
     unsafe {
         log::set_logger_racy(&LOGGER)
-            .map(|()| log::set_max_level_racy(log::LevelFilter::Trace))
+            .map(|()| log::set_max_level_racy(log::LevelFilter::Info))
             .unwrap();
     }
 }
@@ -103,9 +103,11 @@ pub fn drain<F: FnMut(&[u8]) -> usize>(mut f: F) {
         if length == slice1.len() {
             length += f(slice2);
         }
-        for _ in 0..length {
-            // TODO: Add safety assertions
-            unsafe { buffer.buffer.pop_front_unchecked() };
+        if length > 0 {
+            for _ in 0..length {
+                // TODO: Add safety assertions
+                unsafe { buffer.buffer.pop_front_unchecked() };
+            }
         }
     })
 }

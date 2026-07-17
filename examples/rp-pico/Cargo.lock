@@ -365,6 +365,7 @@ dependencies = [
  "process-image",
  "profirust",
  "rp-pico",
+ "rp2040-hal",
  "usb-device",
  "usbd-serial",
 ]

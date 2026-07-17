@@ -26,11 +26,12 @@ rp-pico = "0.9"
 usb-device = "0.3.2"
 usbd-serial = "0.2.2"
 critical-section = "1.2.0"
+rp2040-hal = "0.10.0"
 
 [dependencies.log]
 version = "0.4.20"
 # Change this to use a different log level:
-features = ["max_level_trace"]
+features = ["max_level_info"]
 
 [dependencies.profirust]
 path = "../../"

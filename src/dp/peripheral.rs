@@ -606,7 +606,7 @@ impl<'a> Peripheral<'a> {
 
                             if data_ok {
                                 if t.pdu.len() == self.pi_i.len() {
-                                    log::info!(
+                                    log::debug!(
                                         "Peripheral #{}: received PDU = {:02x?} (len={})",
                                         self.address, t.pdu, t.pdu.len()
                                     );

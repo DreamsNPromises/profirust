@@ -64,7 +64,7 @@ impl DpStatistics {
             0.0
         };
         log::info!(
-            "DP stats: cycles={} ok={:.1}% (data={} correct={}) retries={} timeouts={} diag={} offline={} crc_err={} len_err={}",
+            "DP stats: cycles={} ok={:.1}% (data={} correct={}) retries={} timeouts={} diag={} offline={} crc_err=Nan len_err=Nan",
             self.cycles_completed.get(),
             ok_pct,
             data,
@@ -78,8 +78,8 @@ impl DpStatistics {
             // report failures to the statistics. To enable this counter,
             // either plumb a `&DpStatistics` reference down to
             // `deserialize`, or use a global/thread‑local counter.
-            self.crc_errors.get(),
-            self.length_mismatches.get(),
+            // self.crc_errors.get(),
+            // self.length_mismatches.get(),
         );
     }
 

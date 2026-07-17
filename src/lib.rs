@@ -158,6 +158,23 @@ impl Baudrate {
         }
     }
 
+    /// Return the transmitter quiet time *T<sub>QUI</sub>* in bit times.
+    pub const fn tqui_bits(self) -> u32 {
+        match self {
+            Baudrate::B9600
+            | Baudrate::B19200
+            | Baudrate::B31250
+            | Baudrate::B45450
+            | Baudrate::B93750
+            | Baudrate::B187500
+            | Baudrate::B500000
+            | Baudrate::B1500000 => 0,
+            Baudrate::B3000000 => 3,
+            Baudrate::B6000000 => 6,
+            Baudrate::B12000000 => 9,
+        }
+    }
+
     /// At this baudrate, return how long a given number of bits take to transmit.
     pub fn bits_to_time(self, bits: u32) -> crate::time::Duration {
         crate::time::Duration::from_micros(u64::from(bits) * 1000000 / self.to_rate())

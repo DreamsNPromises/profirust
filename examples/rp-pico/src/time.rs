@@ -18,6 +18,7 @@ pub fn now() -> Option<profirust::time::Instant> {
     #[allow(static_mut_refs)]
     let timer = unsafe { TIMER.as_ref() };
     timer.map(|timer| {
-        profirust::time::Instant::from_micros(i64::try_from(timer.get_counter().ticks()).unwrap())
+        // profirust::time::Instant::from_micros(i64::try_from(timer.get_counter().ticks()).unwrap())
+        profirust::time::Instant::from_micros(timer.get_counter().ticks() as i64)
     })
 }
