@@ -167,8 +167,11 @@ mod tests {
             }
         }
 
-        fn wait_for_matching<F: FnMut(fdl::Telegram) -> bool>(&mut self, f: F) {
-            for now in self.phy_control.iter_until_matching(self.timestep, f) {
+        fn wait_for_matching<F: FnMut(fdl::Telegram) -> bool>(&mut self, mut f: F) {
+            for now in self.phy_control.iter_until_matching(self.timestep, |result| match result {
+                Ok(t) => f(t),
+                Err(_) => false,
+            }) {
                 crate::test_utils::set_log_timestamp(now);
                 if now >= self.max_time {
                     panic!("Test exceeded maximum time!");

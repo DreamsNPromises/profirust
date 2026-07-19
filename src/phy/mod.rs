@@ -123,18 +123,18 @@ pub trait ProfibusPhy {
     /// This function may panic when a transmission is ongoing.
     fn receive_telegram<F, R>(&mut self, now: crate::time::Instant, f: F) -> Option<R>
     where
-        F: FnOnce(crate::fdl::Telegram) -> R,
+        F: FnOnce(Result<crate::fdl::Telegram, crate::fdl::TelegramParseError>) -> R,
     {
         self.receive_data(now, |buffer| {
             match crate::fdl::Telegram::deserialize(buffer) {
                 // Discard all received data on error.
-                Some(Err(_)) => (buffer.len(), None),
+                Some(Err(e)) => (buffer.len(), Some(f(Err(e)))),
                 Some(Ok((telegram, length))) => {
                     log::trace!("PHY RX {:?}", telegram);
                     if length != buffer.len() {
                         log::trace!("Received more than one telegram at once!");
                     }
-                    (length, Some(f(telegram)))
+                    (length, Some(f(Ok(telegram))))
                 }
                 // Don't drop any bytes yet if the telegram isn't complete.
                 None => (0, None),
@@ -161,7 +161,7 @@ pub trait ProfibusPhy {
     /// This function may panic when a transmission is ongoing.
     fn receive_all_telegrams<F, R>(&mut self, now: crate::time::Instant, mut f: F) -> Option<R>
     where
-        F: FnMut(crate::fdl::Telegram, bool) -> R,
+        F: FnMut(Result<crate::fdl::Telegram, crate::fdl::TelegramParseError>, bool) -> R,
     {
         // TODO: Limit this loop in some way?  Or is it enough to rely on the receive-buffer being
         // finite?
@@ -169,11 +169,11 @@ pub trait ProfibusPhy {
             let (is_last, res) = self.receive_data(now, |buffer| {
                 match crate::fdl::Telegram::deserialize(buffer) {
                     // Discard all received data on error.
-                    Some(Err(_)) => (buffer.len(), (true, None)),
+                    Some(Err(e)) => (buffer.len(), (true, Some(f(Err(e), true)))),
                     Some(Ok((telegram, length))) => {
                         log::trace!("PHY RX {:?}", telegram);
                         let telegram_is_last = length == buffer.len();
-                        let res = f(telegram, telegram_is_last);
+                        let res = f(Ok(telegram), telegram_is_last);
                         (length, (telegram_is_last, Some(res)))
                     }
                     // Don't drop any bytes yet if the telegram isn't complete.

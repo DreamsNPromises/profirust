@@ -260,6 +260,27 @@ impl FunctionCode {
     }
 }
 
+/// Specific parse error for a telegram.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TelegramParseError {
+    /// Checksum mismatch (CRC error).
+    CrcError,
+    /// Length info mismatch (LE != LEr).
+    LengthMismatch,
+    /// Length field too short.
+    LengthTooShort,
+    /// Unknown start delimiter.
+    UnknownStartDelimiter(u8),
+    /// Unparseable function code.
+    InvalidFunctionCode,
+    /// Missing end delimiter.
+    NoEndDelimiter,
+    /// DSAP expected but not enough length.
+    DsapExpected,
+    /// SSAP expected but not enough length.
+    SsapExpected,
+}
+
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct DataTelegramHeader {
     /// Destination Address
@@ -362,7 +383,7 @@ pub struct DataTelegram<'a> {
 }
 
 impl<'a> DataTelegram<'a> {
-    pub fn deserialize(mut buffer: &'a [u8]) -> Option<Result<(Self, usize), ()>> {
+    pub fn deserialize(mut buffer: &'a [u8]) -> Option<Result<(Self, usize), TelegramParseError>> {
         if buffer.len() < 6 {
             return None;
         }
@@ -375,17 +396,17 @@ impl<'a> DataTelegram<'a> {
                 buffer = &buffer[3..];
                 if l1 != l2 {
                     log::debug!("Length info mismatch: {} != {}", l1, l2);
-                    return Some(Err(()));
+                    return Some(Err(TelegramParseError::LengthMismatch));
                 } else if l1 < 3 {
                     log::debug!("Length is too short: {}", l1);
-                    return Some(Err(()));
+                    return Some(Err(TelegramParseError::LengthTooShort));
                 }
                 (l1 - 3, usize::from(l1) + 6)
             }
             crate::consts::SD3 => (8, 14),
             s => {
                 log::debug!("Unknown start delimiter 0x{s:02x}");
-                return Some(Err(()));
+                return Some(Err(TelegramParseError::UnknownStartDelimiter(s)));
             }
         };
         let mut length = usize::from(length);
@@ -414,7 +435,7 @@ impl<'a> DataTelegram<'a> {
             Ok(fc) => fc,
             Err(_) => {
                 log::debug!("Unparseable function code");
-                return Some(Err(()));
+                return Some(Err(TelegramParseError::InvalidFunctionCode));
             }
         };
 
@@ -424,7 +445,7 @@ impl<'a> DataTelegram<'a> {
             let dsap = buffer[0];
             if length < 1 {
                 log::debug!("Length {} but DSAP expected", length);
-                return Some(Err(()));
+                return Some(Err(TelegramParseError::DsapExpected));
             }
             length -= 1;
             buffer = &buffer[1..];
@@ -436,7 +457,7 @@ impl<'a> DataTelegram<'a> {
             let ssap = buffer[0];
             if length < 1 {
                 log::debug!("Length {} but SSAP expected", length);
-                return Some(Err(()));
+                return Some(Err(TelegramParseError::SsapExpected));
             }
             length -= 1;
             buffer = &buffer[1..];
@@ -455,12 +476,12 @@ impl<'a> DataTelegram<'a> {
 
         if checksum_received != checksum_calculated {
             log::debug!("Checksum mismatch");
-            return Some(Err(()));
+            return Some(Err(TelegramParseError::CrcError));
         }
 
         if buffer[length + 1] != crate::consts::ED {
             log::debug!("No end delimiter");
-            return Some(Err(()));
+            return Some(Err(TelegramParseError::NoEndDelimiter));
         }
 
         Some(Ok((
@@ -540,7 +561,7 @@ impl TokenTelegram {
         3
     }
 
-    pub fn deserialize(buffer: &[u8]) -> Option<Result<(Self, usize), ()>> {
+    pub fn deserialize(buffer: &[u8]) -> Option<Result<(Self, usize), TelegramParseError>> {
         if buffer.len() < 3 {
             return None;
         }
@@ -605,7 +626,7 @@ impl From<ShortConfirmation> for Telegram<'_> {
 }
 
 impl<'a> Telegram<'a> {
-    pub fn deserialize(buffer: &'a [u8]) -> Option<Result<(Self, usize), ()>> {
+    pub fn deserialize(buffer: &'a [u8]) -> Option<Result<(Self, usize), TelegramParseError>> {
         if buffer.len() == 0 {
             return None;
         }
@@ -618,7 +639,7 @@ impl<'a> Telegram<'a> {
             crate::consts::SD1 | crate::consts::SD2 | crate::consts::SD3 => {
                 DataTelegram::deserialize(buffer).map(|v| v.map(|(v, s)| (v.into(), s)))
             }
-            _ => Some(Err(())),
+            s => Some(Err(TelegramParseError::UnknownStartDelimiter(s))),
         }
     }
 

@@ -238,7 +238,7 @@ impl SimulatorPhy {
         f: F,
     ) -> SimulationIterator<'a, F>
     where
-        F: FnMut(crate::fdl::Telegram) -> bool,
+        F: FnMut(Result<crate::fdl::Telegram, crate::fdl::TelegramParseError>) -> bool,
     {
         SimulationIterator {
             timeout: self.bus_time() + crate::time::Duration::from_secs(10),
@@ -313,7 +313,7 @@ pub struct SimulationIterator<'a, F> {
 
 impl<'a, F> Iterator for SimulationIterator<'a, F>
 where
-    F: FnMut(crate::fdl::Telegram) -> bool,
+    F: FnMut(Result<crate::fdl::Telegram, crate::fdl::TelegramParseError>) -> bool,
 {
     type Item = crate::time::Instant;
 
@@ -328,7 +328,7 @@ where
         if !self.phy.poll_transmission(now) {
             let is_matching = self
                 .phy
-                .receive_telegram(now, |t| (self.matcher)(t))
+                .receive_telegram(now, |result| (self.matcher)(result))
                 .unwrap_or(false);
             if is_matching {
                 return None;

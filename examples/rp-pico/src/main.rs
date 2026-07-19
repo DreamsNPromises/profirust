@@ -160,7 +160,7 @@ fn main() -> ! {
     let mut fdl_master = fdl::FdlActiveStation::new(
         fdl::ParametersBuilder::new(MASTER_ADDRESS, BAUDRATE)
             .watchdog_timeout(profirust::time::Duration::from_secs(2))
-            .slot_bits(20000)
+            .slot_bits(4000)
             .highest_station_address(3)
             .max_retry_limit(3)
             .build_verified(&dp_master),

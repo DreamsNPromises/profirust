@@ -420,4 +420,33 @@ impl<'a> crate::fdl::FdlApplication for DpMaster<'a> {
         //
         // log::warn!("Timeout while waiting for response from #{}!", addr);
     }
+
+    fn handle_receive_error(
+        &mut self,
+        now: crate::time::Instant,
+        fdl: &crate::fdl::FdlActiveStation,
+        error: crate::fdl::TelegramParseError,
+    ) {
+        #[cfg(feature = "statistics")]
+        match error {
+            crate::fdl::TelegramParseError::CrcError => self.state.statistics.inc_crc_errors(),
+            crate::fdl::TelegramParseError::LengthMismatch
+            | crate::fdl::TelegramParseError::LengthTooShort
+            | crate::fdl::TelegramParseError::DsapExpected
+            | crate::fdl::TelegramParseError::SsapExpected => self.state.statistics.inc_malformed(),
+            crate::fdl::TelegramParseError::UnknownStartDelimiter(_)
+            | crate::fdl::TelegramParseError::NoEndDelimiter => self.state.statistics.inc_framing_error(),
+            crate::fdl::TelegramParseError::InvalidFunctionCode => self.state.statistics.inc_invalid_fc(),
+        }
+    }
+
+    fn handle_unexpected_telegram(
+        &mut self,
+        now: crate::time::Instant,
+        fdl: &crate::fdl::FdlActiveStation,
+        addr: u8,
+    ) {
+        #[cfg(feature = "statistics")]
+        self.state.statistics.inc_unexpected();
+    }
 }

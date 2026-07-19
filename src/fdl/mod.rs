@@ -22,6 +22,7 @@ pub(crate) use token_ring::TokenRing;
 pub use telegram::{
     DataTelegram, DataTelegramHeader, FrameCountBit, FunctionCode, RequestType, ResponseState,
     ResponseStatus, ShortConfirmation, Telegram, TelegramTx, TelegramTxResponse, TokenTelegram,
+    TelegramParseError
 };
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -63,6 +64,32 @@ pub trait FdlApplication {
 
     /// Handle a timeout while waiting for a reply from the given address.
     fn handle_timeout(&mut self, now: crate::time::Instant, fdl: &FdlActiveStation, addr: u8);
+
+    /// Called when a reply telegram was received but could not be parsed.
+    fn handle_receive_error(
+        &mut self,
+        now: crate::time::Instant,
+        fdl: &FdlActiveStation,
+        error: TelegramParseError,
+    ) {
+    }
+
+    /// Called when an unexpected telegram is received while waiting for a reply.
+    fn handle_unexpected_telegram(
+        &mut self,
+        _now: crate::time::Instant,
+        _fdl: &FdlActiveStation,
+        _addr: u8,
+    ) {
+    }
+
+    /// Called when the token is lost (e.g. due to collision or timeout).
+    fn handle_token_loss(
+        &mut self,
+        _now: crate::time::Instant,
+        _fdl: &FdlActiveStation,
+    ) {
+    }
 }
 
 // A sort of placeholder when no application is used.

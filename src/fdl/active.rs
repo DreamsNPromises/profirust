@@ -756,8 +756,16 @@ impl FdlActiveStation {
         // Here we conservatively only receive the first pending telegram because it is very
         // unlikely that some other station randomly stole our token.  If it did, we will notice in
         // the next poll cycle.
-        let received = phy.receive_telegram(now, |telegram| {
+        let received = phy.receive_telegram(now, |result| {
             self.mark_rx(now);
+
+            let telegram = match result {
+                Ok(t) => t,
+                Err(_) => {
+                    log::debug!("GAP poll: unparseable reply from #{poll_address}");
+                    return GapPollResponse::UnexpectedTelegram;
+                }
+            };
 
             if let crate::fdl::Telegram::Data(telegram) = &telegram {
                 if telegram.h.sa == poll_address && telegram.h.da == self.p.address {
@@ -840,8 +848,13 @@ impl FdlActiveStation {
         }
 
         // Handle received telegrams
-        phy.receive_all_telegrams(now, |telegram, is_last_telegram| {
+        phy.receive_all_telegrams(now, |result, is_last_telegram| {
             self.mark_rx(now);
+
+            let telegram = match result {
+                Ok(t) => t,
+                Err(_) => return PollDone::waiting_for_bus(),
+            };
 
             // This unusual construct is needed to catch situations where multiple telegrams are
             // received at once and the first one leads us to go offline due to collision.
@@ -1011,8 +1024,13 @@ impl FdlActiveStation {
             return self.mark_tx(now, tx_res.bytes_sent());
         }
 
-        phy.receive_all_telegrams(now, |telegram, is_last_telegram| {
+        phy.receive_all_telegrams(now, |result, is_last_telegram| {
             self.mark_rx(now);
+
+            let telegram = match result {
+                Ok(t) => t,
+                Err(_) => return PollDone::waiting_for_bus(),
+            };
 
             self.handle_telegram(now, telegram, is_last_telegram)
         })
@@ -1217,8 +1235,17 @@ impl FdlActiveStation {
         // unlikely that some other station randomly stole our token.  If it did, we will notice in
         // the next poll cycle.
         let reply_events: Result<Option<()>, PollDone> = phy
-            .receive_telegram(now, |telegram| {
+            .receive_telegram(now, |result| {
                 self.mark_rx(now);
+
+                let telegram = match result {
+                    Ok(t) => t,
+                    Err(e) => {
+                        app.handle_receive_error(now, self, e);
+                        self.state.transition_active_idle();
+                        return Err(PollDone::waiting_for_bus());
+                    }
+                };
 
                 let is_valid_response = match &telegram {
                     crate::fdl::Telegram::Token(_) => false,
@@ -1234,6 +1261,7 @@ impl FdlActiveStation {
                     // When receiving a valid telegram that isn't a valid response, something went
                     // wrong and we must go back to active idle state.
                     log::warn!("Received unexpected telegram while waiting for reply from #{address}: {:?}", telegram);
+                    app.handle_unexpected_telegram(now, self, address);
                     self.state.transition_active_idle();
                     Err(PollDone::waiting_for_bus())
                 }
@@ -1398,8 +1426,13 @@ impl FdlActiveStation {
         }
 
         let mut first_in = true;
-        phy.receive_all_telegrams(now, |telegram, is_last_telegram| {
+        phy.receive_all_telegrams(now, |result, is_last_telegram| {
             self.mark_rx(now);
+
+            let telegram = match result {
+                Ok(t) => t,
+                Err(_) => return PollDone::waiting_for_bus(),
+            };
 
             // Only check and transition to ActiveIdle on the first telegram.
             if first_in {
