@@ -24,7 +24,14 @@ const PLL_SYS_240MHZ: PLLConfig = PLLConfig {
     post_div2: 1,
 };
 
-pub fn init_clocks_192mhz(
+const PLL_SYS_256MHZ: PLLConfig = PLLConfig {
+    vco_freq: HertzU32::MHz(1536),
+    refdiv: 1,
+    post_div1: 6,
+    post_div2: 1,
+};
+
+pub fn init_clocks(
     xosc_dev: pac::XOSC,
     clocks_dev: pac::CLOCKS,
     pll_sys_dev: pac::PLL_SYS,

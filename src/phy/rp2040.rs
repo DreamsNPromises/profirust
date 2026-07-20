@@ -4,6 +4,8 @@ use rp2040_hal::uart;
 use fugit::RateExtU32;
 use rp2040_hal::Clock;
 
+use embedded_hal::blocking::delay::DelayUs;
+
 #[derive(Debug)]
 enum PhyData<'a> {
     Rx {
@@ -154,11 +156,11 @@ where
         })
     }
 
-    fn busy_wait_us(timer: &rp2040_hal::Timer, us: u64) {
-        if us == 0 { return; }
-        let start = timer.get_counter().ticks();
-        while timer.get_counter().ticks().wrapping_sub(start) < us {}
-    }
+    // fn busy_wait_us(timer: &mut rp2040_hal::Timer, us: u64) {
+    //     if us == 0 { return; }
+    //     let start = timer.get_counter().ticks();
+    //     while timer.get_counter().ticks().wrapping_sub(start) < us {}
+    // }
 }
 
 impl<'a, D, P, DIR> crate::phy::ProfibusPhy
@@ -192,7 +194,9 @@ where
             } else {
                 let busy = self.uart.uart_is_busy();
                 if !busy {
-                    Self::busy_wait_us(&self.timer, self.tqui_us);
+                    // Self::busy_wait_us(&self.timer, self.tqui_us);
+                    // self.timer.delay_us(self.tqui_us as u32);
+
                     self.data.make_rx();
                     self.dir_pin.set_low().ok().unwrap();
                     log::trace!("PHY: switched to RX");
@@ -229,14 +233,16 @@ where
                 // We enable the transmitter here and then wait for Tset before poll_transmission()
                 // will start scheduling bytes for transmission.
                 self.dir_pin.set_high().ok().unwrap();
-                Self::busy_wait_us(&self.timer, self.tset_us);
+
+                // self.timer.delay_us(self.tset_us as u32);
+                // Self::busy_wait_us(&self.timer, self.tset_us);
 
                 let buffer = core::mem::replace(buffer, (&mut [][..]).into());
                 self.data = PhyData::Tx {
                     buffer,
                     length,
                     cursor: 0,
-                    start_tx: now,
+                    start_tx: now + crate::time::Duration::from_micros(self.tset_us),
                 };
                 res
             }

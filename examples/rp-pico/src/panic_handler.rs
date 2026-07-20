@@ -1,4 +1,5 @@
 use rp_pico as bsp;
+use core::sync::atomic::Ordering;
 
 use bsp::hal::{self, clocks::init_clocks_and_plls, pac, sio::Sio, watchdog::Watchdog};
 
@@ -7,6 +8,13 @@ use usbd_serial::SerialPort;
 
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
+    // Tell core1 to stop touching USB/the log queue, then give it a moment
+    // to actually notice and park. This delay is a rough safety margin, not
+    // a precise handshake — core1's loop body between checks is short, so a
+    // few thousand cycles is comfortably enough in practice.
+    crate::logger_atomic::PANICKING.store(true, Ordering::SeqCst);
+    cortex_m::asm::delay(50_000);
+
     let mut pac = unsafe { pac::Peripherals::steal() };
     let mut watchdog = Watchdog::new(pac.WATCHDOG);
     let sio = Sio::new(pac.SIO);
@@ -63,10 +71,12 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
 
         // Only print the panic message after two seconds.
         if (now - start).secs() > 2 {
-            crate::logger::drain(|buf| match serial.write(buf) {
-                Ok(n) => n,
-                Err(_) => 0,
-            });
+            unsafe {
+                crate::logger_atomic::drain_from_panic(|buf| match serial.write(buf) {
+                    Ok(n) => n,
+                    Err(_) => 0,
+                });
+            }
         }
 
         usb_dev.poll(&mut [&mut serial]);

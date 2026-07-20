@@ -12,13 +12,19 @@ use profirust::{dp, fdl, phy, Baudrate};
 
 use hal::multicore::{Multicore, Stack};
 use rp2040_hal::Clock;
+use rp2040_hal::gpio::{FunctionUart, OutputSlewRate, OutputDriveStrength};
 
+use heapless::spsc::{Producer, Consumer, Queue};
+use core::sync::atomic::Ordering;
+
+static mut LOG_QUEUE: Queue<u8, 32768> = Queue::new();
 static mut CORE1_STACK: Stack<4096> = Stack::new();
 
-mod logger;
+// mod logger;
 mod panic_handler;
 mod time;
 mod overclock;
+mod logger_atomic;
 
 const IO_ADDRESS: u8 = 3;
 const SLAVE_IDENT: u16 = 0x0008;
@@ -27,7 +33,7 @@ const BAUDRATE: Baudrate = Baudrate::B12000000;
 
 #[bsp::entry]
 fn main() -> ! {
-    logger::init();
+    let mut log_consumer = logger_atomic::init();
     log::info!("Booting...");
 
     let mut pac = pac::Peripherals::take().unwrap();
@@ -35,7 +41,7 @@ fn main() -> ! {
     let mut watchdog = Watchdog::new(pac.WATCHDOG);
     let mut sio = Sio::new(pac.SIO);
 
-    let clocks = overclock::init_clocks_192mhz(
+    let clocks = overclock::init_clocks(
         pac.XOSC,
         pac.CLOCKS,
         pac.PLL_SYS,
@@ -63,12 +69,21 @@ fn main() -> ! {
     let mut led_pin = pins.led.into_push_pull_output();
 
     // ===== UART =====
+    let mut uart_tx = pins.gpio0.into_function::<FunctionUart>();
+    uart_tx.set_slew_rate(OutputSlewRate::Fast);
+    uart_tx.set_drive_strength(OutputDriveStrength::TwelveMilliAmps);
+
     let uart_pins = (
-        pins.gpio0.into_function(),
+        uart_tx,
         pins.gpio1.into_function(),
     );
+
     let uart = hal::uart::UartPeripheral::new(pac.UART0, uart_pins, &mut pac.RESETS);
-    let dir_pin = pins.gpio2.into_push_pull_output();
+
+    let mut dir_pin = pins.gpio2.into_push_pull_output();
+    dir_pin.set_slew_rate(OutputSlewRate::Fast);
+    dir_pin.set_drive_strength(OutputDriveStrength::TwelveMilliAmps);
+
     let mut phy_buffer = [0u8; 512];
     let mut phy = phy::Rp2040Phy::new(
         uart,
@@ -108,8 +123,17 @@ fn main() -> ! {
             .device_class(2)
             .build();
 
+        let mut last_drain = time::now().unwrap();
         loop {
-            logger::drain(|buf| serial.write(buf).unwrap_or(0));
+            if logger_atomic::PANICKING.load(Ordering::Relaxed) {
+                // Stop touching USB/the queue; let the panic handler take over.
+                loop { cortex_m::asm::wfe(); }
+            }
+            let now = time::now().unwrap();
+            if now - last_drain >= profirust::time::Duration::from_millis(1) {
+                logger_atomic::drain(&mut log_consumer, |buf| serial.write(buf).unwrap_or(0));
+                last_drain = now;
+            }
             usb_dev.poll(&mut [&mut serial]);
         }
     });
@@ -159,10 +183,11 @@ fn main() -> ! {
 
     let mut fdl_master = fdl::FdlActiveStation::new(
         fdl::ParametersBuilder::new(MASTER_ADDRESS, BAUDRATE)
-            .watchdog_timeout(profirust::time::Duration::from_secs(2))
-            .slot_bits(4000)
+            .watchdog_timeout(profirust::time::Duration::from_secs(1))
+            .slot_bits(1000)
             .highest_station_address(3)
-            .max_retry_limit(3)
+            // .gap_wait_rotations()
+            .max_retry_limit(1)
             .build_verified(&dp_master),
     );
 
@@ -181,6 +206,8 @@ fn main() -> ! {
     let mut poll_count: u64 = 0u64;
     let mut last_report = time::now().unwrap();
 
+    let mut max_poll_ns: u64 = 0;
+
     loop {
         let now = time::now().unwrap();
 
@@ -190,33 +217,18 @@ fn main() -> ! {
             init = true;
         }
 
-        // for _ in 0..2000 {
-        //     fdl_master.poll(now, &mut phy, &mut dp_master);
-        // }
-        //
-        // stat_counter += 1;
-        // if stat_counter >= 100 {
-        //     dp_master.statistics().log_summary();
-        //     stat_counter = 0;
-        // }
-        //
-        // last = now;
-
-        // for _ in 0..1000 {
-        //     fdl_master.poll(now, &mut phy, &mut dp_master);
-        // }
-        //
-        // if now - last >= profirust::time::Duration::from_millis(500) {
-        //     dp_master.statistics().log_summary();
-        //     last = now;
-        // }
-
-        for _ in 0..128 {
+        for _ in 0..32 {
+            let t0 = time::now().unwrap();
             fdl_master.poll(now, &mut phy, &mut dp_master);
+            let dt = (time::now().unwrap() - t0).total_micros();
+            if dt as u64 > max_poll_ns {
+                max_poll_ns = dt as u64;
+                log::warn!("New max poll latency: {} us", dt);
+            }
         }
         poll_count += 1;
 
-        if now - last_report >= profirust::time::Duration::from_secs(1) {
+        if now - last_report >= profirust::time::Duration::from_millis(100) {
             let elapsed_us = (now - last_report).total_micros();
             let polls_per_sec = poll_count * 1_000_000 / elapsed_us as u64;
             log::info!(
