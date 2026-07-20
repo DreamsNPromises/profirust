@@ -29,7 +29,7 @@ mod logger_atomic;
 const IO_ADDRESS: u8 = 3;
 const SLAVE_IDENT: u16 = 0x0008;
 const MASTER_ADDRESS: u8 = 2;
-const BAUDRATE: Baudrate = Baudrate::B12000000;
+const BAUDRATE: Baudrate = Baudrate::B3000000;
 
 #[bsp::entry]
 fn main() -> ! {
@@ -83,6 +83,22 @@ fn main() -> ! {
     let mut dir_pin = pins.gpio2.into_push_pull_output();
     dir_pin.set_slew_rate(OutputSlewRate::Fast);
     dir_pin.set_drive_strength(OutputDriveStrength::TwelveMilliAmps);
+
+    {
+        let _framing  = pins.gpio6.into_push_pull_output();
+        let _protocol = pins.gpio7.into_push_pull_output();
+        // let _timeout  = pins.gpio9.into_push_pull_output();
+        let _retry    = pins.gpio8.into_push_pull_output();
+
+        let sio_ptr = unsafe { &pac::Peripherals::steal().SIO as *const _ as *const () };
+        unsafe {
+            logger_atomic::set_error_pin(logger_atomic::ErrorCategory::Framing,  6, sio_ptr);
+            logger_atomic::set_error_pin(logger_atomic::ErrorCategory::Protocol, 7, sio_ptr);
+            // logger_atomic::set_error_pin(logger_atomic::ErrorCategory::Timeout,  9, sio_ptr);
+            logger_atomic::set_error_pin(logger_atomic::ErrorCategory::Retry,    8, sio_ptr);
+        }
+    }
+
 
     let mut phy_buffer = [0u8; 512];
     let mut phy = phy::Rp2040Phy::new(
@@ -186,7 +202,6 @@ fn main() -> ! {
             .watchdog_timeout(profirust::time::Duration::from_secs(1))
             .slot_bits(1000)
             .highest_station_address(3)
-            // .gap_wait_rotations()
             .max_retry_limit(1)
             .build_verified(&dp_master),
     );

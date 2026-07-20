@@ -11,6 +11,43 @@ const CAP: usize = 32768;
 
 static mut LOG_QUEUE: Queue<u8, CAP> = Queue::new();
 
+// ---------- GPIO error signaling ----------
+
+#[derive(Copy, Clone)]
+pub enum ErrorCategory {
+    Framing,
+    Protocol,
+    Timeout,
+    Retry,
+}
+
+static mut ERROR_PINS: [u8; 4] = [0xFF; 4];
+const PULSE_TICKS: u8 = 10;
+static mut SIO_BASE: *const () = core::ptr::null();
+
+pub unsafe fn set_error_pin(cat: ErrorCategory, pin: u8, sio: *const ()) {
+    if pin <= 29 {
+        ERROR_PINS[cat as usize] = pin;
+    }
+    SIO_BASE = sio;
+}
+
+/// Toggle the error pin quickly to create a visible pulse.
+unsafe fn pulse_pin(pin: u8) {
+    if pin > 29 || SIO_BASE.is_null() {
+        return;
+    }
+    let sio = &*(SIO_BASE as *const rp_pico::hal::pac::SIO);
+    let mask = 1u32 << pin;
+    for _ in 0..PULSE_TICKS {
+        sio.gpio_out_xor().write(|w| w.bits(mask));
+    }
+    // Ensure the pin ends low (assumes idle low).
+    sio.gpio_out_clr().write(|w| w.bits(mask));
+}
+
+// ---------- Logger ----------
+
 // SAFETY: `log()` is only ever called from core0 (the FDL polling loop never migrates cores
 // in this firmware), so there is exactly one writer. This wrapper only exists to satisfy
 // `Sync` for the static; it does not itself provide any synchronization.
@@ -40,6 +77,42 @@ impl log::Log for SpscLogger {
     }
 
     fn log(&self, record: &log::Record<'_>) {
+        // --- fast keyword classification (done before queue formatting) ---
+        let mut buf = [0u8; 128];
+        let mut written = 0;
+        {
+            struct SliceWriter<'a>(&'a mut [u8], &'a mut usize);
+            impl core::fmt::Write for SliceWriter<'_> {
+                fn write_str(&mut self, s: &str) -> core::fmt::Result {
+                    let avail = &mut self.0[*self.1..];
+                    let len = s.len().min(avail.len());
+                    avail[..len].copy_from_slice(&s.as_bytes()[..len]);
+                    *self.1 += len;
+                    Ok(())
+                }
+            }
+            let mut w = SliceWriter(&mut buf, &mut written);
+            let _ = write!(w, "{}", record.args());
+        }
+        // We parse as UTF-8 lossily – only used for substring checks.
+        let msg = core::str::from_utf8(&buf[..written]).unwrap_or("");
+
+        unsafe {
+            if msg.contains("framing error") {
+                pulse_pin(ERROR_PINS[ErrorCategory::Framing as usize]);
+            }
+            if msg.contains("Token lost")
+            {
+                pulse_pin(ERROR_PINS[ErrorCategory::Protocol as usize]);
+            }
+            if msg.contains("timeout") {
+                pulse_pin(ERROR_PINS[ErrorCategory::Timeout as usize]);
+            }
+            if msg.contains("Resending") {
+                pulse_pin(ERROR_PINS[ErrorCategory::Retry as usize]);
+            }
+        }
+
         let timestamp = crate::time::now().unwrap_or(profirust::time::Instant::ZERO);
         let color = match record.level() {
             log::Level::Error => "\x1B[31m",

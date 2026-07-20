@@ -178,6 +178,14 @@ where
             start_tx,
         } = &mut self.data
         {
+            let mut scratch = [0u8; 32];
+            loop {
+                match self.uart.read_raw(&mut scratch) {
+                    Ok(n) if n > 0 => continue,
+                    _ => break,
+                }
+            }
+
             if now < *start_tx {
                 // We must still wait before beginning transmission (Tset).
                 true
@@ -196,6 +204,14 @@ where
                 if !busy {
                     // Self::busy_wait_us(&self.timer, self.tqui_us);
                     // self.timer.delay_us(self.tqui_us as u32);
+
+                    let mut scratch = [0u8; 32];
+                    loop {
+                        match self.uart.read_raw(&mut scratch) {
+                            Ok(n) if n > 0 => continue,
+                            _ => break,
+                        }
+                    }
 
                     self.data.make_rx();
                     self.dir_pin.set_low().ok().unwrap();
@@ -223,6 +239,7 @@ where
                         "{} bytes in the receive buffer and we go into transmission?",
                         receive_length
                     );
+                    *receive_length = 0;
                 }
                 let (length, res) = f(&mut buffer[..]);
                 if length == 0 {

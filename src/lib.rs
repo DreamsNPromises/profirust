@@ -154,7 +154,7 @@ impl Baudrate {
             | Baudrate::B1500000 => 1,
             Baudrate::B3000000 => 4,
             Baudrate::B6000000 => 8,
-            Baudrate::B12000000 => 0,
+            Baudrate::B12000000 => 16,
         }
     }
 
