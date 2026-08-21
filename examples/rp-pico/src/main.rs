@@ -29,7 +29,7 @@ mod logger_atomic;
 const IO_ADDRESS: u8 = 3;
 const SLAVE_IDENT: u16 = 0x0008;
 const MASTER_ADDRESS: u8 = 2;
-const BAUDRATE: Baudrate = Baudrate::B3000000;
+const BAUDRATE: Baudrate = Baudrate::B9600;
 
 #[bsp::entry]
 fn main() -> ! {
@@ -84,6 +84,7 @@ fn main() -> ! {
     dir_pin.set_slew_rate(OutputSlewRate::Fast);
     dir_pin.set_drive_strength(OutputDriveStrength::TwelveMilliAmps);
 
+    // Это пины для логирования ошибок с помощью Logic analyzer (нужно нормально написать комментарий)
     {
         let _framing  = pins.gpio6.into_push_pull_output();
         let _protocol = pins.gpio7.into_push_pull_output();
