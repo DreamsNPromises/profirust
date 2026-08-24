@@ -130,7 +130,7 @@ Raspberry Pi (шлюз, Rust, std)                 RP2040 (Pico, no_std, profiru
 ```
 
 **Конфигурация — динамически от шлюза** (по нашему решению):
-1. Шлюз парсит GSD → для каждого slave строит `PeripheralConfig`: адрес, `ident_number`, `user_parameters`, `config`, `max_tsdr`, размеры буферов.
+1. Шлюз парсит GSD → для каждого slave строит `PeripheralOptions`: адрес, `ident_number`, `user_parameters`, `config`, `max_tsdr`, размеры буферов.
 2. Шлюз шлёт конфиг на Pico; Pico складывает его в статическую арену и создаёт `Peripheral` (буферы `pi_i`/`pi_q` и конфиги — это `&'a [u8]`, указывают на арену).
 3. Pico запускает цикл обмена. Данные кладутся в `pi_i`; выходы шлюз шлёт по протоколу → Pico пишет в `pi_q_mut()`.
 

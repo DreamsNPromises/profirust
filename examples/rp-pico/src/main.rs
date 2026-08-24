@@ -26,8 +26,8 @@ mod time;
 mod overclock;
 mod logger_atomic;
 
-const IO_ADDRESS: u8 = 3;
-const SLAVE_IDENT: u16 = 0x0008;
+const SLAVE_ADDRESS: u8 = 3;
+const SLAVE_IDENT: u16 = 0x00F0;
 const MASTER_ADDRESS: u8 = 2;
 const BAUDRATE: Baudrate = Baudrate::B9600;
 
@@ -156,29 +156,29 @@ fn main() -> ! {
     });
 
     // ===== DP Master =====
-    let mut buffer_inputs = [0u8; 16];
-    let mut buffer_outputs = [0u8; 16];
-    let mut buffer_diagnostics = [0u8; 6];
+    let mut buffer_inputs = [0u8; 1];
+    let mut buffer_outputs = [0u8; 0];
+    let mut buffer_diagnostics = [0u8; 16];
 
     let mut storage: [dp::PeripheralStorage; 1] = Default::default();
     let mut dp_master = dp::DpMaster::new(&mut storage[..]);
 
     let options = profirust::dp::PeripheralOptions {
         ident_number: SLAVE_IDENT,
-        user_parameters: Some(&[]),
-        config: Some(&[0x1f, 0x2f]),
+        user_parameters: Some(&[0x20]),
+        config: Some(&[0x42, 0x00, 0xbe, 0x41]),
 
         max_tsdr: match BAUDRATE {
-            profirust::Baudrate::B9600 => 60,
-            profirust::Baudrate::B19200 => 60,
-            profirust::Baudrate::B45450 => 250,
-            profirust::Baudrate::B93750 => 60,
-            profirust::Baudrate::B187500 => 60,
-            profirust::Baudrate::B500000 => 100,
-            profirust::Baudrate::B1500000 => 150,
-            profirust::Baudrate::B3000000 => 250,
-            profirust::Baudrate::B6000000 => 450,
-            profirust::Baudrate::B12000000 => 800,
+            profirust::Baudrate::B9600 => 15,
+            profirust::Baudrate::B19200 => 15,
+            profirust::Baudrate::B45450 => 15,
+            profirust::Baudrate::B93750 => 15,
+            profirust::Baudrate::B187500 => 15,
+            profirust::Baudrate::B500000 => 15,
+            profirust::Baudrate::B1500000 => 25,
+            profirust::Baudrate::B3000000 => 50,
+            profirust::Baudrate::B6000000 => 100,
+            profirust::Baudrate::B12000000 => 200,
             b => panic!(
                 "Peripheral \"B-8DI/8DO      DP             \" does not support baudrate {b:?}!"
             ),
@@ -190,7 +190,7 @@ fn main() -> ! {
 
     let io_handle = dp_master.add(
         dp::Peripheral::new(
-            IO_ADDRESS,
+            SLAVE_ADDRESS,
             options,
             &mut buffer_inputs[..],
             &mut buffer_outputs[..]
@@ -201,9 +201,9 @@ fn main() -> ! {
     let mut fdl_master = fdl::FdlActiveStation::new(
         fdl::ParametersBuilder::new(MASTER_ADDRESS, BAUDRATE)
             .watchdog_timeout(profirust::time::Duration::from_secs(1))
-            .slot_bits(1000)
+            .slot_bits(200)
             .highest_station_address(3)
-            .max_retry_limit(1)
+            .max_retry_limit(3)
             .build_verified(&dp_master),
     );
 
@@ -237,21 +237,31 @@ fn main() -> ! {
             let t0 = time::now().unwrap();
             fdl_master.poll(now, &mut phy, &mut dp_master);
             let dt = (time::now().unwrap() - t0).total_micros();
-            if dt as u64 > max_poll_ns {
-                max_poll_ns = dt as u64;
+            if dt > max_poll_ns {
+                max_poll_ns = dt;
                 log::warn!("New max poll latency: {} us", dt);
             }
         }
         poll_count += 1;
 
+        let io_station = dp_master.get_mut(io_handle);
+
         if now - last_report >= profirust::time::Duration::from_millis(100) {
             let elapsed_us = (now - last_report).total_micros();
-            let polls_per_sec = poll_count * 1_000_000 / elapsed_us as u64;
+            let polls_per_sec = poll_count * 1_000_000 / elapsed_us;
             log::info!(
-            "poll() rate: {} calls/sec (avg {} ns/call)",
-            polls_per_sec,
-            elapsed_us * 1000 / poll_count
-        );
+                "poll() rate: {} calls/sec (avg {} ns/call)",
+                polls_per_sec,
+                elapsed_us * 1000 / poll_count
+            );
+            if io_station.is_running() {
+                let current_inputs = io_station.pi_i()[0];
+
+                log::info!(
+                    "Inputs RAW: {:#04X}",
+                    current_inputs,
+                );
+            }
             poll_count = 0;
             last_report = now;
             dp_master.statistics().log_summary();
