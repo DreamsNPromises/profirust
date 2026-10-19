@@ -1,5 +1,6 @@
-use crate::dp::Peripheral;
+#[cfg(feature = "statistics")]
 use crate::dp::DpStatistics;
+use crate::dp::Peripheral;
 
 /// Operating state of the DP master
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -435,8 +436,12 @@ impl<'a> crate::fdl::FdlApplication for DpMaster<'a> {
             | crate::fdl::TelegramParseError::DsapExpected
             | crate::fdl::TelegramParseError::SsapExpected => self.state.statistics.inc_malformed(),
             crate::fdl::TelegramParseError::UnknownStartDelimiter(_)
-            | crate::fdl::TelegramParseError::NoEndDelimiter => self.state.statistics.inc_framing_error(),
-            crate::fdl::TelegramParseError::InvalidFunctionCode => self.state.statistics.inc_invalid_fc(),
+            | crate::fdl::TelegramParseError::NoEndDelimiter => {
+                self.state.statistics.inc_framing_error()
+            }
+            crate::fdl::TelegramParseError::InvalidFunctionCode => {
+                self.state.statistics.inc_invalid_fc()
+            }
         }
     }
 

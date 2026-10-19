@@ -1,0 +1,84 @@
+use bsp::hal::{self, clocks::init_clocks_and_plls, pac, sio::Sio, watchdog::Watchdog};
+use core::sync::atomic::Ordering;
+use rp_pico as bsp;
+
+use usb_device::{class_prelude::*, prelude::*};
+use usbd_serial::SerialPort;
+
+#[panic_handler]
+fn panic(info: &core::panic::PanicInfo) -> ! {
+    // Tell core1 to stop touching USB/the log queue, then give it a moment
+    // to actually notice and park. This delay is a rough safety margin, not
+    // a precise handshake - core1's loop body between checks is short, so a
+    // few thousand cycles is comfortably enough in practice.
+    crate::logger_atomic::PANICKING.store(true, Ordering::SeqCst);
+    cortex_m::asm::delay(50_000);
+
+    let mut pac = unsafe { pac::Peripherals::steal() };
+    let mut watchdog = Watchdog::new(pac.WATCHDOG);
+    let sio = Sio::new(pac.SIO);
+
+    // External high-speed crystal on the pico board is 12Mhz
+    let external_xtal_freq_hz = 12_000_000u32;
+    let clocks = init_clocks_and_plls(
+        external_xtal_freq_hz,
+        pac.XOSC,
+        pac.CLOCKS,
+        pac.PLL_SYS,
+        pac.PLL_USB,
+        &mut pac.RESETS,
+        &mut watchdog,
+    )
+    .ok()
+    .unwrap();
+
+    let _pins = bsp::Pins::new(
+        pac.IO_BANK0,
+        pac.PADS_BANK0,
+        sio.gpio_bank0,
+        &mut pac.RESETS,
+    );
+
+    // Set up the USB driver
+    let usb_bus = UsbBusAllocator::new(hal::usb::UsbBus::new(
+        pac.USBCTRL_REGS,
+        pac.USBCTRL_DPRAM,
+        clocks.usb_clock,
+        true,
+        &mut pac.RESETS,
+    ));
+
+    // Set up the USB Communications Class Device driver
+    let mut serial = SerialPort::new(&usb_bus);
+
+    // Create a USB device with a fake VID and PID
+    let mut usb_dev = UsbDeviceBuilder::new(&usb_bus, UsbVidPid(0x16c0, 0x27dd))
+        .strings(&[StringDescriptors::default()
+            .manufacturer("Rahix Automation")
+            .product("PROFIRUST PICO SLAVE PANIC")
+            .serial_number("PICO-SLAVE-01")])
+        .unwrap()
+        .device_class(2) // from: https://www.usb.org/defined-class-codes
+        .build();
+
+    log::error!("Panic!",);
+    log::error!("{}", info);
+
+    let start = crate::time::now().unwrap_or(profirust::time::Instant::ZERO);
+    loop {
+        let now = crate::time::now().unwrap_or(profirust::time::Instant::ZERO);
+
+        // Only print the panic message after two seconds.
+        if (now - start).secs() > 2 {
+            unsafe {
+                crate::logger_atomic::drain_from_panic(|buf| serial.write(buf).unwrap_or_default());
+            }
+        }
+
+        usb_dev.poll(&mut [&mut serial]);
+
+        if (now - start).secs() > 10 {
+            hal::rom_data::reset_to_usb_boot(0, 0);
+        }
+    }
+}

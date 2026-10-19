@@ -27,6 +27,12 @@ repos:
       entry: sh -c 'cd examples/rp-pico; cargo check'
       files: ^examples/rp-pico/.*\.rs$
       pass_filenames: false
+    - id: cargo-check-rp-slave
+      name: Check rp-pico-slave example
+      language: system
+      entry: sh -c 'cd examples/rp-pico-slave; cargo check'
+      files: ^examples/rp-pico-slave/.*\.rs$
+      pass_filenames: false
     - id: cargo-test
       name: Run profirust testsuite
       language: system

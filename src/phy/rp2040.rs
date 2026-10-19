@@ -4,8 +4,6 @@ use rp2040_hal::uart;
 use fugit::RateExtU32;
 use rp2040_hal::Clock;
 
-use embedded_hal::blocking::delay::DelayUs;
-
 #[derive(Debug)]
 enum PhyData<'a> {
     Rx {
