@@ -136,8 +136,10 @@ where
             per_clock.freq(),
         )?;
 
-        let tset_us = (baudrate.tset_bits() as u64 * 1_000_000 + baudrate.to_rate() - 1) / baudrate.to_rate();
-        let tqui_us = (baudrate.tqui_bits() as u64 * 1_000_000 + baudrate.to_rate() - 1) / baudrate.to_rate();
+        let tset_us =
+            (baudrate.tset_bits() as u64 * 1_000_000 + baudrate.to_rate() - 1) / baudrate.to_rate();
+        let tqui_us =
+            (baudrate.tqui_bits() as u64 * 1_000_000 + baudrate.to_rate() - 1) / baudrate.to_rate();
 
         // Go into RX mode.
         dir_pin.set_low().ok().unwrap();

@@ -608,14 +608,17 @@ impl<'a> Peripheral<'a> {
                                 if t.pdu.len() == self.pi_i.len() {
                                     log::debug!(
                                         "Peripheral #{}: received PDU = {:02x?} (len={})",
-                                        self.address, t.pdu, t.pdu.len()
+                                        self.address,
+                                        t.pdu,
+                                        t.pdu.len()
                                     );
                                     #[cfg(feature = "statistics")]
                                     {
                                         dp.statistics.inc_data_exchanges();
 
                                         if let Some(expected) = dp.statistics.expected_data.get() {
-                                            if t.pdu.windows(expected.len()).any(|w| w == expected) {
+                                            if t.pdu.windows(expected.len()).any(|w| w == expected)
+                                            {
                                                 dp.statistics.inc_correct();
                                             }
                                         }

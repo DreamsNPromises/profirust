@@ -98,7 +98,7 @@ impl DpStatistics {
             self.timeouts.get(),
             self.offline_events.get(),
             self.diagnostics_events.get(),
-            );
+        );
         log::info!(
             "Link: crc={} malformed={} framing={} bad_fc={} unexpected={} token_loss={} collisions={} rx_overrun={}",
             self.crc_errors.get(),
@@ -126,7 +126,8 @@ impl DpStatistics {
     }
 
     pub fn inc_correct(&self) {
-        self.correct_data_received.set(self.correct_data_received.get() + 1);
+        self.correct_data_received
+            .set(self.correct_data_received.get() + 1);
     }
 
     pub fn inc_retries(&self) {
@@ -138,7 +139,8 @@ impl DpStatistics {
     }
 
     pub fn inc_rx_overruns(&self) {
-        self.rx_buffer_overruns.set(self.rx_buffer_overruns.get() + 1);
+        self.rx_buffer_overruns
+            .set(self.rx_buffer_overruns.get() + 1);
     }
 
     pub fn inc_offline(&self) {
@@ -146,7 +148,8 @@ impl DpStatistics {
     }
 
     pub fn inc_diagnostics(&self) {
-        self.diagnostics_events.set(self.diagnostics_events.get() + 1);
+        self.diagnostics_events
+            .set(self.diagnostics_events.get() + 1);
     }
 
     /// Mark that the first data exchange has occurred.
@@ -158,7 +161,8 @@ impl DpStatistics {
         self.crc_errors.set(self.crc_errors.get() + 1);
     }
     pub fn inc_malformed(&self) {
-        self.malformed_telegrams.set(self.malformed_telegrams.get() + 1);
+        self.malformed_telegrams
+            .set(self.malformed_telegrams.get() + 1);
     }
 
     pub fn inc_framing_error(&self) {
@@ -170,7 +174,8 @@ impl DpStatistics {
     }
 
     pub fn inc_unexpected(&self) {
-        self.unexpected_telegrams.set(self.unexpected_telegrams.get() + 1);
+        self.unexpected_telegrams
+            .set(self.unexpected_telegrams.get() + 1);
     }
 
     pub fn inc_token_loss(&self) {

@@ -128,16 +128,15 @@ pub trait ProfibusPhy {
         self.receive_data(now, |buffer| {
             match crate::fdl::Telegram::deserialize(buffer) {
                 // Discard all received data on error.
-                Some(Err(e)) =>
-                    {
-                        log::info!(
-                            "PHY framing error {:?} - raw buffer ({} bytes): {:02x?}",
-                            e,
-                            buffer.len(),
-                            buffer
-                        );
-                        (buffer.len(), Some(f(Err(e))))
-                    },
+                Some(Err(e)) => {
+                    log::info!(
+                        "PHY framing error {:?} - raw buffer ({} bytes): {:02x?}",
+                        e,
+                        buffer.len(),
+                        buffer
+                    );
+                    (buffer.len(), Some(f(Err(e))))
+                }
                 Some(Ok((telegram, length))) => {
                     log::trace!("PHY RX {:?}", telegram);
                     if length != buffer.len() {
@@ -186,7 +185,7 @@ pub trait ProfibusPhy {
                             buffer
                         );
                         (buffer.len(), (true, Some(f(Err(e), true))))
-                    },
+                    }
                     Some(Ok((telegram, length))) => {
                         log::trace!("PHY RX {:?}", telegram);
                         let telegram_is_last = length == buffer.len();

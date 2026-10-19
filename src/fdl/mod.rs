@@ -21,8 +21,8 @@ pub(crate) use token_ring::TokenRing;
 #[doc(hidden)]
 pub use telegram::{
     DataTelegram, DataTelegramHeader, FrameCountBit, FunctionCode, RequestType, ResponseState,
-    ResponseStatus, ShortConfirmation, Telegram, TelegramTx, TelegramTxResponse, TokenTelegram,
-    TelegramParseError
+    ResponseStatus, ShortConfirmation, Telegram, TelegramParseError, TelegramTx,
+    TelegramTxResponse, TokenTelegram,
 };
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -84,12 +84,7 @@ pub trait FdlApplication {
     }
 
     /// Called when the token is lost (e.g. due to collision or timeout).
-    fn handle_token_loss(
-        &mut self,
-        _now: crate::time::Instant,
-        _fdl: &FdlActiveStation,
-    ) {
-    }
+    fn handle_token_loss(&mut self, _now: crate::time::Instant, _fdl: &FdlActiveStation) {}
 }
 
 // A sort of placeholder when no application is used.

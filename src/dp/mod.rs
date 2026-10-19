@@ -11,6 +11,7 @@ mod master;
 mod peripheral;
 mod peripheral_set;
 pub mod scan;
+mod slave;
 mod statistics;
 
 pub use diagnostics::{
@@ -25,4 +26,5 @@ pub use peripheral::{
 };
 pub(crate) use peripheral_set::PeripheralSet;
 pub use peripheral_set::{PeripheralHandle, PeripheralStorage};
+pub use slave::{dispatch, DpSlave, SlaveConfig, SlaveState, MAX_REPLY_LEN};
 pub use statistics::DpStatistics;

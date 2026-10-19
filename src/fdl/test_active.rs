@@ -81,10 +81,13 @@ impl FdlActiveUnderTest {
         mut f: F,
     ) -> crate::time::Duration {
         let start = self.phy_control.bus_time();
-        for now in self.phy_control.iter_until_matching(self.timestep, |result| match result {
-            Ok(t) => f(t),
-            Err(_) => false,
-        }) {
+        for now in self
+            .phy_control
+            .iter_until_matching(self.timestep, |result| match result {
+                Ok(t) => f(t),
+                Err(_) => false,
+            })
+        {
             crate::test_utils::set_log_timestamp(now);
             crate::test_utils::with_active_addr(self.active_station.parameters().address, || {
                 self.active_station.poll(now, &mut self.phy_active, &mut ());
@@ -100,13 +103,16 @@ impl FdlActiveUnderTest {
         let start = self.phy_control.bus_time();
         let mut res = Default::default();
         let mut f = Some(f);
-        for now in self.phy_control.iter_until_matching(self.timestep, |result| match result {
-            Ok(t) => {
-                res = (f.take().unwrap())(t);
-                true
-            }
-            Err(_) => false,
-        }) {
+        for now in self
+            .phy_control
+            .iter_until_matching(self.timestep, |result| match result {
+                Ok(t) => {
+                    res = (f.take().unwrap())(t);
+                    true
+                }
+                Err(_) => false,
+            })
+        {
             crate::test_utils::set_log_timestamp(now);
             crate::test_utils::with_active_addr(self.active_station.parameters().address, || {
                 self.active_station.poll(now, &mut self.phy_active, &mut ());
