@@ -44,11 +44,10 @@ static mut CORE1_STACK: Stack<4096> = Stack::new();
 // Test-bench profile (see section 7 of the plan)
 //
 // The station profile must match what the DP master is configured with.  When
-// testing against the Unigateway master, the gateway must be configured with
-// this slave (GSD `PXC_00F0.gsd`, ident 0x00F0) and exactly the modules
-// "IB IL 24 DI 8" (first) and "IB IL 24 DO 8" (second); the gateway derives
-// `user_parameters`/`config` from the GSD, which yields exactly the constants
-// below.
+// the master's `PeripheralOptions` are generated from the GSD file
+// `PXC_00F0.gsd` (ident 0x00F0), exactly the modules "IB IL 24 DI 8" (first)
+// and "IB IL 24 DO 8" (second) must be selected; the resulting
+// `user_parameters`/`config` are the constants below.
 // ===========================================================================
 
 /// Station address of the simulated slave.

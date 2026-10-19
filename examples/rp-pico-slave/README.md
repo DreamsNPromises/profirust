@@ -1,12 +1,11 @@
 # profirust example: DP-V0 slave simulator on RP2040
 
 This firmware turns a Raspberry Pi Pico into a **DP-V0 slave station**: together with the
-master example ([`examples/rp-pico`](../rp-pico/)) or the Unigateway PROFIBUS master it forms
-the smallest possible test bench - one master, one simulated slave, one LED and (later) one
-button.
+master example ([`examples/rp-pico`](../rp-pico/)) it forms the smallest possible test bench -
+one master, one simulated slave, one LED and (later) one button.
 
 It implements step 3 of [`docs/PLAN-dp-slave-simulator-final.md`](../../docs/PLAN-dp-slave-simulator-final.md):
-the firmware drives a single [`profirust::dp::DpSlave`] from the main loop and answers the
+the firmware drives a single `profirust::dp::DpSlave` from the main loop and answers the
 master's `Slave_Diag`, `Set_Prm`, `Chk_Cfg` and cyclic data exchange requests.  LED/button on
 the process image (step 4), several slaves per device (step 5) and speeds above 500 kbit/s
 (steps 6/7) are not implemented yet.
@@ -42,30 +41,21 @@ The profile is defined by the constants at the top of [`src/main.rs`](src/main.r
 match the master's `PeripheralOptions` - otherwise the slave rejects `Set_Prm`/`Chk_Cfg` and the
 master reports `ParameterError`/`ConfigError`.
 
-### Configuring the Unigateway master for this slave
+### Matching master configuration
 
-The gateway resolves `PeripheralConfig` (ident, `user_parameters`, `config`, I/O lengths) from
-the GSD file, so the slave list in `unigateway_rust/config/config_profibus.lua` must select
-exactly the two modules that make up the profile above - **DI8 first, DO8 second** (the order
+Any DP master can talk to this slave as long as its `PeripheralOptions` match the profile
+above.  When the master's options are generated from `PXC_00F0.gsd`, this means selecting
+exactly the two modules that make up the profile - **DI8 first, DO8 second** (the order
 determines the byte order in `Chk_Cfg`):
 
-```lua
-PROFIBUS_slave {
-    address = 3,
-    gsd     = "PXC_00F0.gsd",
-    modules = {
-        "IB IL 24 DI 8",   -- 1 byte inputs  -> [42 00 BE 81]
-        "IB IL 24 DO 8",   -- 1 byte outputs -> [82 00 BD 81]
-    },
-    global_parameters = { ... },
-    module_parameters = {},
-    push_interval_ms = 0,
-},
+```text
+"IB IL 24 DI 8"   -- 1 byte inputs  -> [42 00 BE 81]
+"IB IL 24 DO 8"   -- 1 byte outputs -> [82 00 BD 81]
 ```
 
-The current gateway config uses only `"IB IL 24 DI 4"` (1 input byte, **0** output bytes);
-with that selection the data exchange PDUs would have the wrong length and the slave would
-answer `RS`.
+Any other module selection produces different `Chk_Cfg` bytes and/or different process image
+lengths, so the slave rejects the configuration and the master reports
+`ParameterError`/`ConfigError`.
 
 ## Build & flash
 
