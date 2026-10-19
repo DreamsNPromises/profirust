@@ -237,8 +237,10 @@ Set_Prm в любом состоянии обрабатывается занов
 
 ### 5.3 Chk_Cfg
 
-Всегда SC. `pdu != cfg.config` → `cfg_fault = true`, остаться в WCFG.
-OK → `cfg_fault=false, state=DXCHG`.
+Всегда SC. `pdu != cfg.config` → `cfg_fault = true`, остаться в WCFG (из WPRM
+состояние не менять). OK → `cfg_fault=false`; в DXCHG переходить **только из
+WCFG**. Слейв, отвергнувший Set_Prm, остаётся в WPRM: иначе он с `prm_fault`
+формально готов к Data_Exch (см. B.5).
 
 ### 5.4 Slave_Diag (ответ)
 

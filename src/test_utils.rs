@@ -1,9 +1,19 @@
 use std::cell::{Cell, RefCell};
 
 std::thread_local! {
-    static LOG_TIMESTAMP: Cell<i64> = Cell::new(0);
-    static ACTIVE_ADDR: Cell<crate::Address> = Cell::new(0);
-    static ALLOWED_WARNINGS: RefCell<Vec<&'static str>> = RefCell::new(Vec::new());
+    static LOG_TIMESTAMP: Cell<i64> = const { Cell::new(0) };
+    static ACTIVE_ADDR: Cell<crate::Address> = const { Cell::new(0) };
+    static ALLOWED_WARNINGS: RefCell<Vec<&'static str>> = const { RefCell::new(Vec::new()) };
+    static LOG_QUIET: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Suppress log output below the warning level for the current thread.
+///
+/// Warnings are still checked against the allowed warnings list (and still panic when they are
+/// not allowed).  This is useful for long-running tests where formatting thousands of trace
+/// messages would dominate the runtime.
+pub fn set_log_quiet(quiet: bool) {
+    LOG_QUIET.set(quiet);
 }
 
 pub fn prepare_test_logger() {
@@ -17,6 +27,9 @@ pub fn prepare_test_logger_with_warnings(allowed_warnings: Vec<&'static str>) {
         .is_test(true)
         .format(move |buf, record| {
             use std::io::Write;
+            if LOG_QUIET.get() && record.level() > log::Level::Warn {
+                return Ok(());
+            }
             let level_str = match record.level() {
                 log::Level::Error => "\x1b[31mERROR\x1b[0m",
                 log::Level::Warn => "\x1b[33mWARN \x1b[0m",

@@ -349,7 +349,12 @@ impl<'a> DpSlave<'a> {
 
     /// Handle `Chk_Cfg` (SAP 62).
     ///
-    /// Always replies with a short confirmation (SC).
+    /// Always replies with a short confirmation (SC).  Mismatches are reported through the
+    /// diagnostics (see [`DpSlave::handle_telegram()`]).
+    ///
+    /// The configuration is only accepted (transition to [`SlaveState::Dxchg`]) when the slave is
+    /// actually waiting for it ([`SlaveState::Wcfg`]).  A slave which rejected `Set_Prm` stays in
+    /// [`SlaveState::Wprm`] and must not reach data exchange this way.
     fn handle_chk_cfg(&mut self, dt: &DataTelegram, out: &mut [u8]) -> usize {
         let ok = match self.cfg.config {
             Some(expected) => dt.pdu == expected,
@@ -358,10 +363,16 @@ impl<'a> DpSlave<'a> {
 
         if ok {
             self.cfg_fault = false;
-            self.state = SlaveState::Dxchg;
+            if self.state == SlaveState::Wcfg {
+                self.state = SlaveState::Dxchg;
+            }
         } else {
             self.cfg_fault = true;
-            self.state = SlaveState::Wcfg;
+            // Drop out of data exchange but do not advance a slave that is still waiting for
+            // parameters.
+            if self.state != SlaveState::Wprm {
+                self.state = SlaveState::Wcfg;
+            }
         }
 
         out[0] = crate::consts::SC;
@@ -711,7 +722,7 @@ mod tests {
 
     fn reply_diag_pdu<'a>(telegram: &'a Telegram<'a>) -> &'a [u8] {
         match telegram {
-            Telegram::Data(t) => &t.pdu,
+            Telegram::Data(t) => t.pdu,
             _ => panic!("expected a data telegram"),
         }
     }
@@ -846,6 +857,49 @@ mod tests {
         assert_eq!(slave.handle_telegram(now(), &t, &mut out), 1);
         assert_eq!(out[0], crate::consts::SC);
         assert_eq!(slave.state(), SlaveState::Dxchg);
+    }
+
+    #[test]
+    fn a3b_chk_cfg_after_failed_set_prm() {
+        // A slave that rejected `Set_Prm` must not reach data exchange via `Chk_Cfg`.
+        let mut slave = make_slave();
+        let mut req = [0u8; 128];
+        let mut out = [0u8; MAX_REPLY_LEN];
+
+        // Wrong ident -> SC, state stays Wprm.
+        let t = make_request(
+            &mut req,
+            SLAVE,
+            crate::consts::SAP_SLAVE_SET_PRM,
+            crate::consts::SAP_MASTER_MS0,
+            FunctionCode::new_srd_low(FrameCountBit::First),
+            &set_prm_pdu(0x1234, USER_PRM, Some((1, 10))),
+        );
+        assert_eq!(slave.handle_telegram(now(), &t, &mut out), 1);
+        assert_eq!(out[0], crate::consts::SC);
+        assert_eq!(slave.state(), SlaveState::Wprm);
+
+        // Correct configuration -> SC but the slave stays in Wprm.
+        let t = make_request(
+            &mut req,
+            SLAVE,
+            crate::consts::SAP_SLAVE_CHK_CFG,
+            crate::consts::SAP_MASTER_MS0,
+            FunctionCode::new_srd_low(FrameCountBit::High),
+            CONFIG,
+        );
+        assert_eq!(slave.handle_telegram(now(), &t, &mut out), 1);
+        assert_eq!(out[0], crate::consts::SC);
+        assert_eq!(slave.state(), SlaveState::Wprm);
+
+        // Data exchange is refused with "RS".
+        let t = data_request(&mut req, FrameCountBit::Low, &[0x00]);
+        let reply = slave.handle_telegram(now(), &t, &mut out);
+        let telegram = parse_reply(reply, &out);
+        let Telegram::Data(dt) = telegram else {
+            panic!("expected a data telegram")
+        };
+        assert_eq!(dt.is_response(), Some(ResponseStatus::SapNotEnabled));
     }
 
     #[test]
@@ -1145,7 +1199,7 @@ mod tests {
         slave.tick(time);
         assert_eq!(slave.state(), SlaveState::Dxchg); // exactly 100 ms: not > period
 
-        time = time + crate::time::Duration::from_micros(2);
+        time += crate::time::Duration::from_micros(2);
         slave.tick(time);
         assert_eq!(slave.state(), SlaveState::Wprm);
         assert_eq!(slave.pi_q(), &[0x00]); // fail_safe: pi_q cleared

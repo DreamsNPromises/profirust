@@ -14,6 +14,9 @@ pub mod scan;
 mod slave;
 mod statistics;
 
+#[cfg(all(test, feature = "phy-simulator"))]
+mod test_slave_sim;
+
 pub use diagnostics::{
     ChannelDataType, ChannelDiagnostics, ChannelError, ExtDiagBlock, ExtDiagBlockIter,
     ExtendedDiagnostics,
