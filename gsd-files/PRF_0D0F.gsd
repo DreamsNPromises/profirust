@@ -1,0 +1,67 @@
+; PROFIBUS-DP GSD for the profirust DP-V0 slave simulator (examples/rp-pico-slave).
+; Keep Ident_Number, User_Prm_Data and the Module= bytes in sync with the
+; constants at the top of that firmware.
+;
+; Ident_Number is an arbitrary placeholder: ident numbers are assigned by PNO,
+; so just make sure it does not collide with a device in your master's GSD
+; library, and that the master's configuration uses the same value.
+
+#Profibus_DP
+
+GSD_Revision = 2
+Vendor_Name = "profirust contributors"
+Model_Name = "DP-V0 Slave Simulator (RP2040)"
+Revision = "V1.0"
+Ident_Number = 0x0D0F
+OrderNumber = "PROFIRUST-SIM"
+Hardware_Release = "V1.0"
+Software_Release = "V1.0"
+Protocol_Ident = 0
+Station_Type = 0
+Slave_Family = 3@Profirust@Simulator
+
+; Enable only the baudrate the firmware is compiled for (`BAUDRATE`).
+9.6_supp = 1
+;19.2_supp = 1
+;45.45_supp = 1
+;93.75_supp = 1
+;187.5_supp = 1
+;500_supp = 1
+;1.5M_supp = 1
+;3M_supp = 1
+;6M_supp = 1
+;12M_supp = 1
+
+MaxTsdr_9.6 = 60
+MaxTsdr_19.2 = 60
+MaxTsdr_45.45 = 60
+MaxTsdr_93.75 = 60
+MaxTsdr_187.5 = 60
+MaxTsdr_500 = 100
+MaxTsdr_1.5M = 150
+MaxTsdr_3M = 250
+MaxTsdr_6M = 450
+MaxTsdr_12M = 800
+
+Freeze_Mode_supp = 0
+Sync_Mode_supp = 0
+Auto_Baud_supp = 0
+Set_Slave_Add_supp = 0
+Fail_Safe = 1
+Min_Slave_Intervall = 1
+Max_Diag_Data_Len = 16
+
+; Compact station with one fixed module: 1 byte inputs + 1 byte outputs.
+; The bytes below are sent verbatim in Chk_Cfg.
+Modular_Station = 0
+Max_Module = 1
+Max_Input_Len = 1
+Max_Output_Len = 1
+Max_Data_Len = 2
+
+Module = "1 byte in, 1 byte out" 0x42,0x00,0xBE,0x81,0x82,0x00,0xBD,0x81
+EndModule
+
+; User_Prm_Data: one byte, must match `USER_PARAMETERS` in the firmware.
+Max_User_Prm_Data_Len = 1
+Ext_User_Prm_Data_Const(0) = 0x20

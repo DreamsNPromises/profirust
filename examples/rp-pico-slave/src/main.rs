@@ -12,8 +12,12 @@
 //! Log output goes through a single-producer/single-consumer queue to core1, which forwards it
 //! over USB CDC.  Nothing is printed from the PROFIBUS hot path on core0.
 //!
-//! Not implemented yet (later steps of the plan): LED/button on the simulated process image
+//! Not implemented yet (later steps of the plan): the button on the simulated process image
 //! (step 4), several slaves per device (step 5) and speeds above 500 kbit/s (steps 6/7).
+//!
+//! The output process image is already visible: bit 0 of `pi_q` (the byte the master writes
+//! with `Data_Exch`) drives the external LED on GPIO6.  The on-board LED keeps blinking with
+//! the simulated input byte as a life sign.
 
 #![no_std]
 #![no_main]
@@ -41,31 +45,29 @@ mod time;
 static mut CORE1_STACK: Stack<4096> = Stack::new();
 
 // ===========================================================================
-// Test-bench profile (see section 7 of the plan)
+// Station profile (`gsd-files/PRF_0D0F.gsd`)
 //
-// The station profile must match what the DP master is configured with.  When
-// the master's `PeripheralOptions` are generated from the GSD file
-// `PXC_00F0.gsd` (ident 0x00F0), exactly the modules "IB IL 24 DI 8" (first)
-// and "IB IL 24 DO 8" (second) must be selected; the resulting
-// `user_parameters`/`config` are the constants below.
+// The GSD file describes this slave to a DP master's configuration tool; the
+// constants below must stay identical to it, otherwise the slave rejects
+// `Set_Prm`/`Chk_Cfg`.
 // ===========================================================================
 
 /// Station address of the simulated slave.
 const SLAVE_ADDRESS: u8 = 3;
-/// Ident number from the GSD (`PXC_00F0.gsd`).
-const SLAVE_IDENT: u16 = 0x00F0;
-/// `User_Prm_Data`: one coupler parameter byte from the GSD.
+/// Ident number, arbitrary (see the GSD file).
+const SLAVE_IDENT: u16 = 0x0D0F;
+/// `User_Prm_Data` of the GSD.
 const USER_PARAMETERS: &[u8] = &[0x20];
-/// `Chk_Cfg` data: "IB IL 24 DI 8" (1 byte inputs) + "IB IL 24 DO 8" (1 byte outputs).
+/// `Chk_Cfg` of the GSD: 1 byte of inputs + 1 byte of outputs.
 const CONFIG: &[u8] = &[0x42, 0x00, 0xBE, 0x81, 0x82, 0x00, 0xBD, 0x81];
 
-/// Bus speed.  Start with 9.6 kbit/s (the speed of the current master setup), then raise it
-/// together with the master in steps 6/7 of the plan.
+/// Bus speed; the GSD declares exactly this one baudrate.  Raise it in both
+/// places at the same time.
 const BAUDRATE: Baudrate = Baudrate::B9600;
 
-/// Length of the input process image (`pi_i`, slave -> master): 1 byte from the DI8 module.
+/// Length of the input process image (`pi_i`, slave -> master).
 const PI_I_LEN: usize = 1;
-/// Length of the output process image (`pi_q`, master -> slave): 1 byte from the DO8 module.
+/// Length of the output process image (`pi_q`, master -> slave).
 const PI_Q_LEN: usize = 1;
 
 #[bsp::entry]
@@ -107,6 +109,12 @@ fn main() -> ! {
 
     // On-board LED: blinks together with the simulated input byte (life sign, no bus traffic).
     let mut led = pins.led.into_push_pull_output();
+
+    // External LED on GPIO6: mirrors bit 0 of the output process image (`pi_q`), i.e. what the
+    // DP master writes to this slave.  Wiring: GPIO6 -> 220..330 Ohm -> LED anode, LED cathode
+    // -> GND.  Active high, so a written `1` lights the LED up.
+    let mut output_led = pins.gpio15.into_push_pull_output();
+    output_led.set_low().ok();
 
     // ===== UART0 / RS-485 =====
     let mut uart_tx = pins.gpio0.into_function::<FunctionUart>();
@@ -220,6 +228,7 @@ fn main() -> ! {
     // ===== Main loop (core0): bus hot path =====
     let mut last_state = slaves[0].state();
     let mut last_counter = time::now().unwrap();
+    let mut last_outputs = u8::MAX;
 
     loop {
         let now = time::now().unwrap();
@@ -265,6 +274,16 @@ fn main() -> ! {
                 *byte = byte.wrapping_add(1);
                 led.set_state(((*byte & 1) != 0).into()).ok();
             }
+        }
+
+        // Output process image: show bit 0 of `pi_q` on the external LED.  `pi_q` is filled by
+        // `Data_Exch` requests of the master, so this is the visible proof that the write path
+        // master -> slave works.  The watchdog (`fail_safe`) clears `pi_q`, which turns the LED
+        // off when the master goes silent.
+        let outputs = slaves[0].pi_q().first().copied().unwrap_or(0);
+        if outputs != last_outputs {
+            last_outputs = outputs;
+            output_led.set_state(((outputs & 1) != 0).into()).ok();
         }
 
         // Report lifecycle transitions.  This is not in the per-telegram hot path.
