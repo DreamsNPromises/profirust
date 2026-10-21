@@ -1,10 +1,11 @@
 //! DP-V0 slave simulator for the RP2040 (`profirust` example).
 //!
-//! This firmware implements step 3 of `docs/PLAN-dp-slave-simulator-final.md`: a second Pico on
-//! the same PROFIBUS bus as the DP master (`examples/rp-pico`) emulates one DP-V0 slave station.
-//! It answers the master's `Slave_Diag`/`Set_Prm`/`Chk_Cfg` requests, takes part in cyclic data
-//! exchange and does its own watchdog handling - all through a single [`profirust::dp::DpSlave`]
-//! that is driven by [`profirust::dp::dispatch()`] from the main loop.
+//! This firmware implements steps 3 to 5 of `docs/PLAN-dp-slave-simulator-final.md`: a second
+//! Pico on the same PROFIBUS bus as the DP master emulates [`slaves::N_SLAVES`] DP-V0 slave
+//! stations (addresses 3 and 4 by default).  It answers the master's `Slave_Diag`/`Set_Prm`/
+//! `Chk_Cfg` requests, takes part in cyclic data exchange and does its own watchdog handling -
+//! all through the [`profirust::dp::DpSlave`] objects owned by [`slaves::Slaves`], which are
+//! driven by [`profirust::dp::dispatch()`] from the main loop.
 //!
 //! The physical layer is the same as for the master: UART0 (GPIO0 = TX, GPIO1 = RX) with an
 //! RS-485 transceiver and GPIO2 as the direction pin.
@@ -12,12 +13,11 @@
 //! Log output goes through a single-producer/single-consumer queue to core1, which forwards it
 //! over USB CDC.  Nothing is printed from the PROFIBUS hot path on core0.
 //!
-//! Not implemented yet (later steps of the plan): the button on the simulated process image
-//! (step 4), several slaves per device (step 5) and speeds above 500 kbit/s (steps 6/7).
-//!
-//! The output process image is already visible: bit 0 of `pi_q` (the byte the master writes
-//! with `Data_Exch`) drives the external LED on GPIO6.  The on-board LED keeps blinking with
-//! the simulated input byte as a life sign.
+//! The station table ([`slaves::SLAVES`]) holds everything that differs between the stations.
+//! Each station has an external LED which mirrors bit 0 of its output process image (`pi_q`,
+//! written by the master with `Data_Exch`) and a 1 Hz test counter in its input process image
+//! (`pi_i`, read by the master).  Not implemented yet (later steps of the plan): speeds above
+//! 500 kbit/s (steps 6/7).
 
 #![no_std]
 #![no_main]
@@ -40,35 +40,14 @@ use usbd_serial::SerialPort;
 mod logger_atomic;
 mod overclock;
 mod panic_handler;
+mod slaves;
 mod time;
 
 static mut CORE1_STACK: Stack<4096> = Stack::new();
 
-// ===========================================================================
-// Station profile (`gsd-files/PRF_0D0F.gsd`)
-//
-// The GSD file describes this slave to a DP master's configuration tool; the
-// constants below must stay identical to it, otherwise the slave rejects
-// `Set_Prm`/`Chk_Cfg`.
-// ===========================================================================
-
-/// Station address of the simulated slave.
-const SLAVE_ADDRESS: u8 = 3;
-/// Ident number, arbitrary (see the GSD file).
-const SLAVE_IDENT: u16 = 0x0D0F;
-/// `User_Prm_Data` of the GSD.
-const USER_PARAMETERS: &[u8] = &[0x20];
-/// `Chk_Cfg` of the GSD: 1 byte of inputs + 1 byte of outputs.
-const CONFIG: &[u8] = &[0x42, 0x00, 0xBE, 0x81, 0x82, 0x00, 0xBD, 0x81];
-
-/// Bus speed; the GSD declares exactly this one baudrate.  Raise it in both
-/// places at the same time.
+/// Bus speed; the GSD declares exactly this one baudrate.  Raise it in both the
+/// GSD and the firmware at the same time.
 const BAUDRATE: Baudrate = Baudrate::B9600;
-
-/// Length of the input process image (`pi_i`, slave -> master).
-const PI_I_LEN: usize = 1;
-/// Length of the output process image (`pi_q`, master -> slave).
-const PI_Q_LEN: usize = 1;
 
 #[bsp::entry]
 fn main() -> ! {
@@ -107,14 +86,17 @@ fn main() -> ! {
         &mut pac.RESETS,
     );
 
-    // On-board LED: blinks together with the simulated input byte (life sign, no bus traffic).
-    let mut led = pins.led.into_push_pull_output();
+    // On-board LED: 1 Hz heartbeat, driven by the test counters of the simulated stations.
+    let mut heartbeat_led = pins.led.into_push_pull_output();
 
-    // External LED on GPIO6: mirrors bit 0 of the output process image (`pi_q`), i.e. what the
-    // DP master writes to this slave.  Wiring: GPIO6 -> 220..330 Ohm -> LED anode, LED cathode
-    // -> GND.  Active high, so a written `1` lights the LED up.
-    let mut output_led = pins.gpio15.into_push_pull_output();
-    output_led.set_low().ok();
+    // External LEDs: one per simulated station ([`slaves::SLAVES`]).  Each LED mirrors bit 0 of
+    // the station's output process image (`pi_q`), i.e. what the DP master writes to it.
+    // Wiring: GPIO -> 220..330 Ohm -> LED anode, LED cathode -> GND.  Active high, so a written
+    // `1` lights the LED up.
+    let leds = [
+        pins.gpio15.into_push_pull_output().into_dyn_pin(),
+        pins.gpio14.into_push_pull_output().into_dyn_pin(),
+    ];
 
     // ===== UART0 / RS-485 =====
     let mut uart_tx = pins.gpio0.into_function::<FunctionUart>();
@@ -194,41 +176,32 @@ fn main() -> ! {
         },
     );
 
-    // ===== DP-V0 slave =====
+    // ===== DP-V0 slaves =====
     //
-    // `pi_i`/`pi_q` are the process images: the master's outputs end up in `pi_q`, our `pi_i`
-    // is what the master reads as inputs.  Both are plain slices owned by this function; the
-    // slave accesses them through its accessors.
-    let mut pi_i = [0u8; PI_I_LEN];
-    let mut pi_q = [0u8; PI_Q_LEN];
-
-    let slave = dp::DpSlave::new(
-        dp::SlaveConfig {
-            address: SLAVE_ADDRESS,
-            ident_number: SLAVE_IDENT,
-            user_parameters: Some(USER_PARAMETERS),
-            config: Some(CONFIG),
-            fail_safe: true,
-        },
-        &mut pi_i[..],
-        &mut pi_q[..],
-    );
-    let mut slaves = [slave];
+    // The stations, their process images (`pi_i`/`pi_q`) and their LED pins are owned by
+    // `slaves::Slaves`; see `slaves.rs` for the station table and the profile constants.
+    let mut slaves = slaves::Slaves::new(leds);
     let mut tx_buffer = [0u8; dp::MAX_REPLY_LEN];
 
     log::info!(
-        "DP-V0 slave #{}: ident {:#06X}, {:?}, pi_i {} B, pi_q {} B",
-        SLAVE_ADDRESS,
-        SLAVE_IDENT,
+        "DP-V0 simulator: {} slaves, ident {:#06X}, {:?}, pi_i {} B, pi_q {} B",
+        slaves::N_SLAVES,
+        slaves::IDENT_NUMBER,
         BAUDRATE,
-        PI_I_LEN,
-        PI_Q_LEN,
+        slaves::PI_I_LEN,
+        slaves::PI_Q_LEN,
     );
+    for def in slaves::SLAVES {
+        log::info!(
+            "  slave #{}: LED GPIO{}, test counter +{}/s",
+            def.address,
+            def.led_pin.num,
+            def.counter_step,
+        );
+    }
 
     // ===== Main loop (core0): bus hot path =====
-    let mut last_state = slaves[0].state();
-    let mut last_counter = time::now().unwrap();
-    let mut last_outputs = u8::MAX;
+    let mut heartbeat = false;
 
     loop {
         let now = time::now().unwrap();
@@ -241,7 +214,7 @@ fn main() -> ! {
                     // `dispatch()` must run inside the closure: the telegram borrows the PHY
                     // receive buffer.  The reply is copied into `tx_buffer` and transmitted
                     // after the closure returned.
-                    Ok(telegram) => dp::dispatch(&mut slaves, now, &telegram, &mut tx_buffer),
+                    Ok(telegram) => slaves.dispatch(now, &telegram, &mut tx_buffer),
                     // Broken telegram: stay silent and let the master retry.
                     Err(_) => 0,
                 })
@@ -251,7 +224,7 @@ fn main() -> ! {
                 // The first byte of the reply must not leave before the minimum TSDR has
                 // passed.  `transmit_data()` delays the actual transmission by Tset itself,
                 // so only the difference has to be waited out here.
-                wait_min_tsdr(&slaves);
+                wait_min_tsdr(slaves.min_tsdr_bits());
 
                 let tx_now = time::now().unwrap();
                 phy.transmit_data(tx_now, |buf| {
@@ -261,52 +234,23 @@ fn main() -> ! {
             }
         }
 
-        // Housekeeping: slave watchdog (also covers the case that the master went silent).
-        for slave in slaves.iter_mut() {
-            slave.tick(now);
-        }
-
-        // Step 3 stand-in for the button (step 4): change the input byte once per second so
-        // that the master visibly sees new data.
-        if now - last_counter >= Duration::from_secs(1) {
-            last_counter = now;
-            if let Some(byte) = slaves[0].pi_i_mut().first_mut() {
-                *byte = byte.wrapping_add(1);
-                led.set_state(((*byte & 1) != 0).into()).ok();
-            }
-        }
-
-        // Output process image: show bit 0 of `pi_q` on the external LED.  `pi_q` is filled by
-        // `Data_Exch` requests of the master, so this is the visible proof that the write path
-        // master -> slave works.  The watchdog (`fail_safe`) clears `pi_q`, which turns the LED
-        // off when the master goes silent.
-        let outputs = slaves[0].pi_q().first().copied().unwrap_or(0);
-        if outputs != last_outputs {
-            last_outputs = outputs;
-            output_led.set_state(((outputs & 1) != 0).into()).ok();
-        }
-
-        // Report lifecycle transitions.  This is not in the per-telegram hot path.
-        let state = slaves[0].state();
-        if state != last_state {
-            log::info!("DP slave #{} is now {:?}", SLAVE_ADDRESS, state);
-            last_state = state;
+        // Housekeeping: station watchdogs, 1 Hz test counters, LEDs and lifecycle logging.  Also
+        // covers the case that the master went silent.
+        if slaves.tick(now) {
+            // The test counters advanced: blink the on-board LED as a life sign.
+            heartbeat = !heartbeat;
+            let _ = heartbeat_led.set_state(heartbeat.into());
         }
     }
 }
 
-/// Wait for the minimum TSDR of all slaves (at least 11 bit times) after the end of the request.
+/// Wait for the minimum TSDR (at least 11 bit times) after the end of the request.
 ///
 /// [`Rp2040Phy::transmit_data()`] starts the transmission `Tset` bit times after the `now` that
 /// is passed to it, so waiting for `need - Tset` here results in a total response delay of
 /// `need`, which is what the plan (section 6) asks for.
-fn wait_min_tsdr(slaves: &[dp::DpSlave<'_>]) {
-    let min_tsdr_bits = slaves
-        .iter()
-        .map(|slave| u32::from(slave.min_tsdr_bits()))
-        .max()
-        .unwrap_or(11)
-        .max(11);
+fn wait_min_tsdr(min_tsdr_bits: u32) {
+    let min_tsdr_bits = min_tsdr_bits.max(11);
 
     let rate = BAUDRATE.to_rate();
     let need_us = (u64::from(min_tsdr_bits) * 1_000_000).div_ceil(rate);
